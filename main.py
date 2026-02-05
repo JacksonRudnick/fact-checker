@@ -5,11 +5,11 @@ import os
 
 
 class Dataset:
-    def __init__(self, filepath):
+    def __init__(self, filepath: str):
         self.data = []
 
-        if os.path.exists('data/fever/processed_' + filepath):
-            with open('data/fever/processed_' + filepath, 'r') as f:
+        if os.path.exists('data/fever/processed_' + filepath.strip('data/fever/')):
+            with open('data/fever/processed_' + filepath.strip('data/fever/'), 'r') as f:
                 for line in f:
                     self.data.append(json.loads(line))
         else:
@@ -20,7 +20,7 @@ class Dataset:
                     self.data.append(json.loads(line))
             self.process()
             self.fetch_articles()
-            self.save('data/fever/processed_' + filepath)
+            self.save('data/fever/processed_' + filepath.strip('data/fever/'))
         
     def process(self):
         #process dataset
@@ -87,6 +87,9 @@ class Dataset:
         with open(filepath, 'w') as f:
             for item in self.data:
                 f.write(json.dumps(item) + '\n')
+
+
+
 
 
 if __name__ == "__main__":
