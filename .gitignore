@@ -1,3 +1,6 @@
 data/combined/
 data/sentence
 data/token
+.venv/
+venv/
+__pycache__/
