@@ -64,21 +64,22 @@ class FetchDataset:
         #create a new entry in data for each article that contains array of article's sentences
         for item in self.data:
             articles = {}
-            for ev_set in item['evidence']:
-                for ev in ev_set:
+            for cnt in range(len(item['evidence'])):
+                for ev in item['evidence'][cnt]:
                     doc_id = ev[0]
                     if doc_id is None or doc_id in articles:
+                        articles[cnt] = ['No article found']
                         continue
                     try:
                         page = self.wiki_wiki.page(doc_id)
                         if not page.exists():
-                            articles[doc_id] = []
+                            articles[cnt] = ['No article found']
                             continue
                         sentences = page.text.split('. ')
-                        articles[doc_id] = sentences
+                        articles[cnt] = sentences
                         #should implement saving to disk to avoid re-fetching
                     except Exception as e:
-                        articles[doc_id] = []
+                        articles[cnt] = ['No article found']
 
             item['articles'] = articles
 
