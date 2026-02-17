@@ -1,7 +1,10 @@
 #imports
+from calendar import c
+from tqdm import tqdm
 import json
 import wikipediaapi
 import os
+import re
 
 class FetchDataset:
     def __init__(self, filepath: str):
@@ -9,13 +12,13 @@ class FetchDataset:
 
         if os.path.exists('data/fever/processed_' + filepath.strip('data/fever/')):
             with open('data/fever/processed_' + filepath.strip('data/fever/'), 'r') as f:
-                for line in f:
+                for line in tqdm(f, desc="Reading processed file"):
                     self.data.append(json.loads(line))
         else:
             self.wiki_wiki = wikipediaapi.Wikipedia('fact-checker (jrudnick@cub.uca.edu)', 'en')
 
             with open(filepath, 'r') as f:
-                for line in f:
+                for line in tqdm(f, desc="Reading input file"):
                     self.data.append(json.loads(line))
             self.process()
             self.fetch_articles()
@@ -29,7 +32,7 @@ class FetchDataset:
         #format doc_id to match wikipedia format aka
         #2_Hearts_-LRB-Kylie_Minogue_song-RRB- -> 2_Hearts_(Kylie_Minogue_song)
         #convert evidence into tuple of (doc_id, sentence_id)
-        for item in self.data:
+        for item in tqdm(self.data, desc="Processing data"):
             label = item['label']
             if label == 'SUPPORTS':
                 item['label'] = 0
@@ -58,37 +61,43 @@ class FetchDataset:
         #drop other keys
         self.data = [{ 'claim': item['claim'],
                        'label': item['label'],
-                       'evidence': item['evidence']} for item in self.data]
+                       'evidence': item['evidence'][0]} for item in self.data]
 
     def fetch_articles(self):
         #create a new entry in data for each article that contains array of article's sentences
-        for item in self.data:
+        # for each item in data, for each evidence, fetch article text and split into sentences, store in new key 'articles' as dict of doc_id to sentences
+        
+        for claim in tqdm(self.data, desc="Fetching articles"):
             articles = {}
-            for cnt in range(len(item['evidence'])):
-                for ev in item['evidence'][cnt]:
-                    doc_id = ev[0]
-                    if doc_id is None or doc_id in articles:
-                        articles[cnt] = ['No article found']
+            for ev in claim['evidence']:
+                doc_id = ev[0]
+                if doc_id is None:
+                    articles[doc_id] = ['No article found']
+                    continue
+                elif doc_id in articles:
+                    continue
+                try:
+                    page = self.wiki_wiki.page(doc_id)
+                    if not page.exists():
+                        articles[doc_id] = ['No article found']
                         continue
-                    try:
-                        page = self.wiki_wiki.page(doc_id)
-                        if not page.exists():
-                            articles[cnt] = ['No article found']
-                            continue
-                        sentences = page.text.split('. ')
-                        articles[cnt] = sentences
-                        #should implement saving to disk to avoid re-fetching
-                    except Exception as e:
-                        articles[cnt] = ['No article found']
+                    sentences = re.split(r'\n+|(?<=[.!?])\s+', page.text)
+                    articles[doc_id] = sentences
+                except Exception as e:
+                    articles[doc_id] = ['No article found']
 
-            item['articles'] = articles
+            claim['articles'] = articles
 
     def get_data(self):
         return self.data
+    
+    def print_sample(self, n=5):
+        for item in self.data[:n]:
+            print(json.dumps(item, indent=2))
 
     def save(self, filepath):
         with open(filepath, 'w') as f:
-            for item in self.data:
+            for item in tqdm(self.data, desc="Saving data"):
                 f.write(json.dumps(item) + '\n')
 
 
@@ -96,9 +105,9 @@ class FetchDataset:
 if __name__ == "__main__":
 
     #load datasets
-    #train_data = Dataset('data/fever/train.jsonl')
-    test_data = FetchDataset('data/fever/paper_test.jsonl')
-    print(json.dumps(test_data.data[:5], indent=2))
+    train_data = FetchDataset('data/fever/train.jsonl')
+    #test_data = FetchDataset('data/fever/test.jsonl')
+    #test_data.print_sample()
 
     #isolate important sentence based on sentence id
 
