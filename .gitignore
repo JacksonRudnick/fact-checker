@@ -1,6 +1,10 @@
 data/combined/
 data/sentence
 data/token
+data/fever/wiki-pages/
+data/fever/*_formatted*
+
 .venv/
 venv/
 __pycache__/
+.vscode/
