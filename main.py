@@ -1,3 +1,9 @@
+"""
+Part 2: Graph Attention Network Fact Verifier
+Classifies whether a claim is SUPPORTED, REFUTED, or NOT ENOUGH INFO
+using a Graph Attention Network with syntactic dependencies as edges.
+Designed to work with the selected sentence from Part 1: Sentence Ranker.
+"""
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +19,16 @@ from transformers import (
     TrainingArguments,
 )
 
+# Import GAT verifier
+from gat_verifier import (
+    GraphAttentionVerifier,
+    build_dependency_graph,
+    graph_to_geometric_data,
+    load_nlp_model,
+    train_gat_verifier,
+    verify_claim_with_gat,
+)
+
 
 LABEL_TO_ID = {
     "SUPPORTS": 0,
@@ -23,13 +39,12 @@ ID_TO_LABEL = {value: key for key, value in LABEL_TO_ID.items()}
 
 
 @dataclass
-class Config:
+class VerifierConfig:
     model_name: str = "bert-base-uncased"
-    output_dir: str = "outputs/bert-fever"
+    output_dir: str = "outputs/bert-fact-verifier"
     train_path: str = "data/fever/train_formatted_cleaned.jsonl"
     test_path: str = "data/fever/test_formatted_cleaned.jsonl"
     max_length: int = 384
-    max_evidence_sentences: int = 5
     epochs: float = 1.0
     train_batch_size: int = 8
     eval_batch_size: int = 8
@@ -47,11 +62,11 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def build_evidence_text(row: dict, max_evidence_sentences: int) -> str:
+def build_evidence_text(row: dict) -> str:
+    """Extract a single supporting sentence from evidence."""
     evidence = row.get("evidence", [])
     articles = row.get("articles", {})
 
-    selected = []
     for ev in evidence:
         if not isinstance(ev, dict):
             continue
@@ -68,18 +83,13 @@ def build_evidence_text(row: dict, max_evidence_sentences: int) -> str:
         if 0 <= sentence_id < len(doc_sentences):
             sentence_text = str(doc_sentences[sentence_id]).strip()
             if sentence_text:
-                selected.append(sentence_text)
+                return sentence_text
 
-        if len(selected) >= max_evidence_sentences:
-            break
-
-    if not selected:
-        return "NO_EVIDENCE"
-
-    return " [EVIDENCE] ".join(selected)
+    return "NO_EVIDENCE"
 
 
-def prepare_model_records(rows: list[dict], max_evidence_sentences: int) -> list[dict]:
+def prepare_model_records(rows: list[dict]) -> list[dict]:
+    """Prepare training records with claim and single evidence sentence."""
     records = []
 
     for row in rows:
@@ -94,7 +104,7 @@ def prepare_model_records(rows: list[dict], max_evidence_sentences: int) -> list
         records.append(
             {
                 "text": claim,
-                "text_pair": build_evidence_text(row, max_evidence_sentences=max_evidence_sentences),
+                "text_pair": build_evidence_text(row),
                 "label": LABEL_TO_ID[label],
             }
         )
@@ -110,87 +120,42 @@ def compute_metrics(eval_pred):
 
 
 def main() -> None:
-    cfg = Config()
+    """Train the GAT-based fact verifier (Part 2)."""
+    train_gat_verifier()
 
-    if not torch.cuda.is_available():
-        raise RuntimeError(
-            "No GPU detected. A ROCm-compatible GPU is required. "
-            "Install a ROCm-enabled PyTorch build and verify with: "
-            "python -c 'import torch; print(torch.cuda.is_available())'"
-        )
 
-    device_name = torch.cuda.get_device_name(0)
-    print(f"Using GPU: {device_name}")
-
-    train_path = Path(cfg.train_path)
-    test_path = Path(cfg.test_path)
-
-    train_data = load_jsonl(train_path)
-    test_data = load_jsonl(test_path)
-
-    print(f"Loaded train file: {train_path}")
-    print(f"Loaded test file: {test_path}")
-    print(f"Train rows: {len(train_data)}")
-    print(f"Test rows: {len(test_data)}")
-
-    train_examples = prepare_model_records(train_data, max_evidence_sentences=cfg.max_evidence_sentences)
-    test_examples = prepare_model_records(test_data, max_evidence_sentences=cfg.max_evidence_sentences)
-
-    print(f"Train examples used: {len(train_examples)}")
-    print(f"Test examples used: {len(test_examples)}")
-
-    train_dataset = Dataset.from_list(train_examples)
-    test_dataset = Dataset.from_list(test_examples)
-
-    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        cfg.model_name,
-        num_labels=3,
-        id2label=ID_TO_LABEL,
-        label2id=LABEL_TO_ID,
-    )
-
-    def tokenize_fn(batch):
-        return tokenizer(
-            batch["text"],
-            batch["text_pair"],
-            truncation=True,
-            max_length=cfg.max_length,
-        )
-
-    train_tokenized = train_dataset.map(tokenize_fn, batched=True)
-    test_tokenized = test_dataset.map(tokenize_fn, batched=True)
-
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-
-    training_args = TrainingArguments(
-        output_dir=cfg.output_dir,
-        learning_rate=cfg.learning_rate,
-        num_train_epochs=cfg.epochs,
-        per_device_train_batch_size=cfg.train_batch_size,
-        per_device_eval_batch_size=cfg.eval_batch_size,
-        eval_strategy="epoch",
-        save_strategy="epoch",
-        logging_steps=100,
-        report_to="none",
-    )
-
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_tokenized,
-        eval_dataset=test_tokenized,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics,
-    )
-
-    trainer.train()
-    metrics = trainer.evaluate()
-    print("Eval metrics:")
-    print(metrics)
-
-    trainer.save_model(cfg.output_dir)
-    tokenizer.save_pretrained(cfg.output_dir)
+def verify_claim(
+    sentence_ranker_path: str,
+    gat_verifier_path: str,
+    claim: str,
+    sentences: list[str],
+) -> dict:
+    """
+    Two-part pipeline: Select relevant sentence, then verify the claim with GAT.
+    
+    Args:
+        sentence_ranker_path: Path to trained sentence ranker model
+        gat_verifier_path: Path to trained GAT verifier model
+        claim: The claim to verify
+        sentences: List of sentences from article
+        
+    Returns:
+        Dict with selected_sentence_idx, sentence_text, and verification result
+    """
+    from sentence_ranker import select_sentence
+    
+    # Part 1: Select most relevant sentence
+    sentence_idx = select_sentence(sentence_ranker_path, claim, sentences)
+    selected_sentence = sentences[sentence_idx]
+    
+    # Part 2: Verify the claim using selected sentence with GAT
+    result = verify_claim_with_gat(gat_verifier_path, claim, selected_sentence)
+    
+    return {
+        "selected_sentence_idx": sentence_idx,
+        "sentence": selected_sentence,
+        **result,  # Includes prediction, confidence, and scores
+    }
 
 
 if __name__ == "__main__":
