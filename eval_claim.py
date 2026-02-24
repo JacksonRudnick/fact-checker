@@ -26,8 +26,8 @@ def read_multiline(prompt: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate claim with sentence ranker + GAT verifier.")
-    parser.add_argument("--sentence-ranker-path", default="outputs/bert-fact-verifier/")
-    parser.add_argument("--gat-verifier-path", default="outputs/gat-fact-verifier/")
+    parser.add_argument("--sentence-ranker-path", default="outputs/bert-sentence-ranker")
+    parser.add_argument("--gat-verifier-path", default="outputs/gat-fact-verifier/gat_verifier.pt")
     parser.add_argument("--claim", default=None)
     parser.add_argument("--article-text", default=None)
     parser.add_argument("--article-file", default=None)
@@ -40,9 +40,9 @@ def main() -> None:
     sentence_ranker_path = Path(args.sentence_ranker_path)
     gat_verifier_path = Path(args.gat_verifier_path)
 
-    if not sentence_ranker_path.exists():
+    if not sentence_ranker_path.exists() or not sentence_ranker_path.is_dir():
         raise FileNotFoundError(f"Sentence ranker model path not found: {sentence_ranker_path}")
-    if not gat_verifier_path.exists():
+    if not gat_verifier_path.exists() or not gat_verifier_path.is_file():
         raise FileNotFoundError(f"GAT verifier model path not found: {gat_verifier_path}")
 
     claim = args.claim.strip() if args.claim else input("Claim: ").strip()

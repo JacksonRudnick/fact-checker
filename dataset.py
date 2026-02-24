@@ -152,11 +152,11 @@ def _build_wiki_lookup(wiki_split: Dataset, needed_doc_ids: set[str]) -> dict[st
 
 	pending = set(needed_doc_ids)
 	for row in wiki_split:
-		row_id = _normalize_doc_id(row.get("id", ""))
+		row_id = _normalize_doc_id(row.get("id", "")) # type: ignore
 		if row_id in pending:
-			sentences = _parse_wiki_lines(row.get("lines", ""))
+			sentences = _parse_wiki_lines(row.get("lines", "")) # type: ignore
 			if not sentences:
-				text_value = str(row.get("text", "")).strip()
+				text_value = str(row.get("text", "")).strip() # type: ignore
 				sentences = [text_value] if text_value else []
 
 			lookup[row_id] = sentences
@@ -170,7 +170,7 @@ def _build_wiki_lookup(wiki_split: Dataset, needed_doc_ids: set[str]) -> dict[st
 def _collect_needed_doc_ids(claims_split: Dataset) -> set[str]:
 	needed = set()
 	for claim_row in claims_split:
-		for doc_id in _extract_evidence_doc_ids(claim_row):
+		for doc_id in _extract_evidence_doc_ids(claim_row): # type: ignore
 			needed.add(doc_id)
 	return needed
 
@@ -204,7 +204,7 @@ def export_formatted_split(claims_split: Dataset, wiki_lookup: dict[str, list[st
 
 	with output_path.open("w", encoding="utf-8") as handle:
 		for claim_row in claims_split:
-			record = _format_claim_record(claim_row, wiki_lookup)
+			record = _format_claim_record(claim_row, wiki_lookup) # type: ignore
 			has_any_articles = any(record["articles"].get(doc_id) for doc_id in record["articles"])
 			if not has_any_articles and record["evidence"]:
 				claims_without_articles += 1
@@ -235,12 +235,12 @@ def retrieve_evidence_articles(claim_row: dict, wiki_split: Dataset) -> dict:
 	found_articles = {}
 
 	for row in wiki_split:
-		row_id = _normalize_doc_id(row.get("id", ""))
+		row_id = _normalize_doc_id(row.get("id", "")) # type: ignore
 		if row_id in pending:
 			found_articles[row_id] = {
 				"doc_id": row_id,
-				"text": row.get("text", ""),
-				"lines": row.get("lines", ""),
+				"text": row.get("text", ""), # type: ignore
+				"lines": row.get("lines", ""), # type: ignore
 			}
 			pending.remove(row_id)
 			if not pending:
@@ -272,8 +272,6 @@ def build_fever_datasets() -> DatasetDict:
 	)
 
 
-
-
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--export-formatted", action="store_true")
@@ -293,7 +291,7 @@ if __name__ == "__main__":
 	print("\nSample claim row (claims_train[0]):")
 	print(fever["claims_train"][0])
 
-	wiki_sample = next((row for row in fever["wiki"] if row.get("id")), fever["wiki"][0])
+	wiki_sample = next((row for row in fever["wiki"] if row.get("id")), fever["wiki"][0]) # type: ignore
 	print("\nSample wiki row (first non-empty id):")
 	print(wiki_sample)
 

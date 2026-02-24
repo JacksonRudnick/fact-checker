@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import re
 from pathlib import Path
@@ -123,50 +122,20 @@ def process_file(input_path: Path, output_path: Path, limit: int | None = None) 
     }
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Clean formatted FEVER claim/article JSONL files.")
-    parser.add_argument(
-        "--inputs",
-        nargs="+",
-        default=[
-            "data/fever/train_formatted.jsonl",
-            "data/fever/test_formatted.jsonl",
-        ],
-        help="Input formatted JSONL files.",
-    )
-    parser.add_argument(
-        "--suffix",
-        default="_cleaned",
-        help="Suffix added to output filenames.",
-    )
-    parser.add_argument(
-        "--out-dir",
-        default=None,
-        help="Optional output directory. If omitted, writes next to each input file.",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Optional max rows per file for quick tests.",
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-
-    out_dir = Path(args.out_dir) if args.out_dir else None
+    inputs = [ "data/fever/train_formatted.jsonl", "data/fever/test_formatted.jsonl" ]
+    suf = "_cleaned"
+    out_dir = None
     results = []
 
-    for input_name in args.inputs:
+    for input_name in inputs:
         input_path = Path(input_name)
         if not input_path.exists():
             print(f"Skipping missing file: {input_path}")
             continue
 
-        output_path = output_path_for(input_path, args.suffix, out_dir)
-        stats = process_file(input_path, output_path, limit=args.limit)
+        output_path = output_path_for(input_path, suf, out_dir)
+        stats = process_file(input_path, output_path)
         results.append(stats)
 
     if not results:
