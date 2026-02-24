@@ -3,6 +3,7 @@ data/sentence
 data/token
 data/fever/wiki-pages/
 data/fever/*_formatted*
+outputs/
 
 .venv/
 venv/

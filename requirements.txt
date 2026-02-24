@@ -1,8 +1,11 @@
 # Core dependencies
-torch>=2.0.0
+--extra-index-url https://download.pytorch.org/whl/rocm7.1
+torch==2.10.0+rocm7.1
+torchvision==0.25.0+rocm7.1
 transformers>=4.30.0
 datasets>=2.0.0
 numpy>=1.21.0
+accelerate>=1.1.0
 
 # Graph Neural Network
 torch-geometric>=2.2.0
@@ -17,3 +20,4 @@ scikit-learn>=1.0.0
 
 # Development & utilities
 ipython>=7.0.0
+tqdm>=4.0.0

@@ -4,12 +4,12 @@ Classifies whether a claim is SUPPORTED, REFUTED, or NOT ENOUGH INFO
 using a Graph Attention Network with syntactic dependencies as edges.
 Designed to work with the selected sentence from Part 1: Sentence Ranker.
 """
+import os
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import torch
 from datasets import Dataset
 from transformers import (
     AutoModelForSequenceClassification,
@@ -21,10 +21,6 @@ from transformers import (
 
 # Import GAT verifier
 from gat_verifier import (
-    GraphAttentionVerifier,
-    build_dependency_graph,
-    graph_to_geometric_data,
-    load_nlp_model,
     train_gat_verifier,
     verify_claim_with_gat,
 )
@@ -45,10 +41,11 @@ class VerifierConfig:
     train_path: str = "data/fever/train_formatted_cleaned.jsonl"
     test_path: str = "data/fever/test_formatted_cleaned.jsonl"
     max_length: int = 384
-    epochs: float = 1.0
+    epochs: float = 3
     train_batch_size: int = 8
     eval_batch_size: int = 8
     learning_rate: float = 2e-5
+    cuda_visible_devices: str = "0"
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -119,8 +116,89 @@ def compute_metrics(eval_pred):
     return {"accuracy": accuracy}
 
 
+def train_bert_verifier(cfg: VerifierConfig) -> None:
+    train_path = Path(cfg.train_path)
+    test_path = Path(cfg.test_path)
+
+    train_data = load_jsonl(train_path)
+    test_data = load_jsonl(test_path)
+
+    print(f"Loaded train file: {train_path}")
+    print(f"Loaded test file: {test_path}")
+    print(f"Train rows: {len(train_data)}")
+    print(f"Test rows: {len(test_data)}")
+
+    train_records = prepare_model_records(train_data)
+    test_records = prepare_model_records(test_data)
+
+    print(f"Train examples used: {len(train_records)}")
+    print(f"Test examples used: {len(test_records)}")
+
+    train_dataset = Dataset.from_list(train_records)
+    test_dataset = Dataset.from_list(test_records)
+
+    tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        cfg.model_name,
+        num_labels=3,
+        id2label=ID_TO_LABEL,
+        label2id=LABEL_TO_ID,
+    )
+
+    def tokenize_batch(batch):
+        return tokenizer(
+            batch["text"],
+            batch["text_pair"],
+            truncation=True,
+            max_length=cfg.max_length,
+        )
+
+    train_tokenized = train_dataset.map(tokenize_batch, batched=True)
+    test_tokenized = test_dataset.map(tokenize_batch, batched=True)
+
+    training_args = TrainingArguments(
+        output_dir=cfg.output_dir,
+        learning_rate=cfg.learning_rate,
+        num_train_epochs=cfg.epochs,
+        per_device_train_batch_size=cfg.train_batch_size,
+        per_device_eval_batch_size=cfg.eval_batch_size,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        logging_steps=100,
+        report_to="none",
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_tokenized,
+        eval_dataset=test_tokenized,
+        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
+        compute_metrics=compute_metrics,
+    )
+
+    trainer.train()
+    metrics = trainer.evaluate()
+    print("BERT eval metrics:")
+    print(metrics)
+
+    trainer.save_model(cfg.output_dir)
+    tokenizer.save_pretrained(cfg.output_dir)
+    print(f"Saved BERT verifier to: {cfg.output_dir}")
+
+
 def main() -> None:
-    """Train the GAT-based fact verifier (Part 2)."""
+    """Train both verifiers: BERT classifier first, then GAT verifier."""
+    cfg = VerifierConfig()
+
+    if cfg.cuda_visible_devices:
+        os.environ["CUDA_VISIBLE_DEVICES"] = cfg.cuda_visible_devices
+        print(f"Using CUDA_VISIBLE_DEVICES={cfg.cuda_visible_devices}")
+
+    print("\n=== Training BERT verifier ===")
+    train_bert_verifier(cfg)
+
+    print("\n=== Training GAT verifier ===")
     train_gat_verifier()
 
 
