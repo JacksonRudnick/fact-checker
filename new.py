@@ -96,8 +96,8 @@ class FeverStage1Dataset(Dataset):
                 "label": torch.tensor(sample["label"], dtype=torch.float),
                 }
     
-    def collate_fn(batch):
-        return {
+def collate_fn(batch):
+    return {
             "input_ids": torch.stack([b["input_ids"] for b in batch]),
             "attention_mask": torch.stack([b["attention_mask"] for b in batch]),
             "token_type_ids": torch.stack([b["token_type_ids"] for b in batch]),
@@ -105,7 +105,7 @@ class FeverStage1Dataset(Dataset):
             "claim_id": [b["claim_id"] for b in batch],
             "doc_id": [b["doc_id"] for b in batch],
             "sent_id": [b["sent_id"] for b in batch],
-        }
+            }
 
 class BertRelevanceScorer(nn.Module):
     def __init__(self, config: BertConfig):
