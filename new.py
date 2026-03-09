@@ -8,17 +8,17 @@ import pickle
 import torch.nn as nn
 from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.utils.data import (
-    Dataset, 
-    DataLoader,
-)
+        Dataset, 
+        DataLoader,
+        )
 from transformers import (
-    BertModel,
-    BertTokenizer,
-)
+        BertModel,
+        BertTokenizer,
+        )
 
 @dataclass
 class MainConfig:
-    device: str = "0"
+    device: torch.device = torch.device("cpu")
     train_path: str = "data/fever/train_formatted_cleaned.jsonl"
     test_path: str = "data/fever/test_formatted_cleaned.jsonl"
 
@@ -45,7 +45,7 @@ class FeverStage1Dataset(Dataset):
         for i, row in enumerate(data):
             if i % 1000 == 0:
                 print(f"Building dataset: {i}/{len(data)} claims processed", flush=True)
-            
+
             claim = row["claim"]
             label = row["label"]
 
@@ -72,7 +72,7 @@ class FeverStage1Dataset(Dataset):
                         "doc_id": doc_id,
                         "sent_id": sent_id,
                         "claim_id": row["id"]
-                    })
+                        })
 
     def __len__(self):
         return len(self.samples)
@@ -81,24 +81,32 @@ class FeverStage1Dataset(Dataset):
         sample = self.samples[idx]
 
         encoding = self.tokenizer(
-            sample["claim"],
-            sample["sentence"],
-            max_length=self.config.max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt"
-        )
+                sample["claim"],
+                sample["sentence"],
+                max_length=self.config.max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt"
+                )
 
         return {
-            "input_ids": encoding["input_ids"].squeeze(0), # type: ignore
-            "attention_mask": encoding["attention_mask"].squeeze(0), # type: ignore
-            "token_type_ids": encoding["token_type_ids"].squeeze(0), # type: ignore
-            "label": torch.tensor(sample["label"], dtype=torch.float),
-            "claim_id": sample["claim_id"],
-            "doc_id": sample["doc_id"],
-            "sent_id": sample["sent_id"]
-        }
+                "input_ids": encoding["input_ids"].squeeze(0),
+                "attention_mask": encoding["attention_mask"].squeeze(0),
+                "token_type_ids": encoding["token_type_ids"].squeeze(0),
+                "label": torch.tensor(sample["label"], dtype=torch.float),
+                }
     
+    def collate_fn(batch):
+        return {
+            "input_ids": torch.stack([b["input_ids"] for b in batch]),
+            "attention_mask": torch.stack([b["attention_mask"] for b in batch]),
+            "token_type_ids": torch.stack([b["token_type_ids"] for b in batch]),
+            "label": torch.stack([b["label"] for b in batch]),
+            "claim_id": [b["claim_id"] for b in batch],
+            "doc_id": [b["doc_id"] for b in batch],
+            "sent_id": [b["sent_id"] for b in batch],
+        }
+
 class BertRelevanceScorer(nn.Module):
     def __init__(self, config: BertConfig):
         super().__init__()
@@ -120,22 +128,22 @@ class BertRelevanceScorer(nn.Module):
 
     def forward(self, input_ids, attention_mask, token_type_ids):
         outputs = self.bert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids
-        )
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids
+                )
 
         cls_token = outputs.last_hidden_state[:, 0, :]  # [batch_size, 768]
         cls_token = self.dropout(cls_token)
         logit = self.classifier(cls_token)              # [batch_size, 1]
         return logit
-    
+
     def get_embeddings(self, input_ids, attention_mask, token_type_ids):
         outputs = self.bert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids
-        )
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids
+                )
         cls_token = outputs.last_hidden_state[:, 0, :]  # [batch_size, 768]
         return cls_token
 
@@ -159,15 +167,17 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
 
     # dataloaders
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=bert_config.train_batch_size,
-        shuffle=True
-    )
+            train_dataset,
+            batch_size=bert_config.train_batch_size,
+            shuffle=True,
+            collate_fn=collate_fn
+            )
     test_loader = DataLoader(
-        test_dataset,
-        batch_size=bert_config.eval_batch_size,
-        shuffle=False
-    )
+            test_dataset,
+            batch_size=bert_config.eval_batch_size,
+            shuffle=False,
+            collate_fn=collate_fn
+            )
 
     # model
     model = BertRelevanceScorer(bert_config).to(device)
@@ -183,7 +193,7 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
         {"params": model.bert.encoder.layer[-2:].parameters(), "lr": bert_config.learning_rate},
         {"params": model.bert.pooler.parameters(), "lr": bert_config.learning_rate}, # type: ignore
         {"params": model.classifier.parameters(), "lr": bert_config.learning_rate * 10},
-    ])
+        ])
 
     # training loop
     for epoch in range(bert_config.epochs):
@@ -208,7 +218,7 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
-        print(f"Epoch {epoch + 1}/{bert_config.epochs} — Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch + 1}/{bert_config.epochs} — Loss: {avg_loss:.4f}", flush=True)
 
         evaluate_bert(model, test_loader, criterion, device)
 
@@ -274,7 +284,7 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                         "doc_id": doc_id,
                         "sent_id": sent_id,
                         "sentence": sentence
-                    })
+                        })
 
             if not candidates:
                 results.append({
@@ -283,18 +293,18 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                     "label": label,
                     "top_k_embeddings": None,
                     "top_k_sentences": None
-                })
+                    })
                 continue
 
             # tokenize all candidates
             encodings = tokenizer(
-                [claim] * len(candidates),
-                [c["sentence"] for c in candidates],
-                max_length=config.max_length,
-                padding="max_length",
-                truncation=True,
-                return_tensors="pt"
-            )
+                    [claim] * len(candidates),
+                    [c["sentence"] for c in candidates],
+                    max_length=config.max_length,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt"
+                    )
 
             input_ids = encodings["input_ids"].to(device) # type: ignore
             attention_mask = encodings["attention_mask"].to(device) # type: ignore
@@ -313,7 +323,7 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                     "label": label,
                     "top_k_embeddings": None,
                     "top_k_sentences": None
-                })
+                    })
                 continue
 
             # take top-k by probability
@@ -329,7 +339,7 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                 "label": label,
                 "top_k_embeddings": top_k_embeddings,
                 "top_k_sentences": top_k_sentences
-            })
+                })
 
     # save to disk
     output_path.parent.mkdir(parents=True, exist_ok=True)
