@@ -88,13 +88,16 @@ class FeverStage1Dataset(Dataset):
                 truncation=True,
                 return_tensors="pt"
                 )
-
+        
         return {
-                "input_ids": encoding["input_ids"].squeeze(0),
-                "attention_mask": encoding["attention_mask"].squeeze(0),
-                "token_type_ids": encoding["token_type_ids"].squeeze(0),
-                "label": torch.tensor(sample["label"], dtype=torch.float),
-                }
+            "input_ids": encoding["input_ids"].squeeze(0),
+            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "token_type_ids": encoding["token_type_ids"].squeeze(0),
+            "label": torch.tensor(sample["label"], dtype=torch.float),
+            "claim_id": sample["claim_id"],
+            "doc_id": sample["doc_id"],
+            "sent_id": sample["sent_id"]
+            }
     
 def collate_fn(batch):
     return {
