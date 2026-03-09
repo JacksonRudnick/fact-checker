@@ -29,8 +29,8 @@ class BertConfig:
     output_dir: str = "outputs/bert-fact-verifier"
     max_length: int = 512
     epochs: int = 3
-    train_batch_size: int = 8
-    eval_batch_size: int = 8
+    train_batch_size: int = 128
+    eval_batch_size: int = 128
     learning_rate: float = 2e-5
     top_k: int = 5
     threshold: float = 0.5
