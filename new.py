@@ -144,12 +144,18 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
     train_data = load_jsonl(Path(main_config.train_path))
     test_data = load_jsonl(Path(main_config.test_path))
 
+    print(f"Train rows: {len(train_data)}", flush=True)
+    print(f"Test rows: {len(test_data)}", flush=True)
+
     # tokenizer
     tokenizer = BertTokenizer.from_pretrained(bert_config.tokenizer_name)
 
     # datasets
     train_dataset = FeverStage1Dataset(train_data, tokenizer, bert_config)
     test_dataset = FeverStage1Dataset(test_data, tokenizer, bert_config)
+
+    print(f"Train samples: {len(train_dataset)}", flush=True)
+    print(f"Test samples: {len(test_dataset)}", flush=True)
 
     # dataloaders
     train_loader = DataLoader(
