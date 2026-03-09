@@ -337,7 +337,7 @@ def load_stage1_embeddings(path: Path) -> list[dict]:
 
 def load_cuda():
     if torch.cuda.is_available():
-        main_config.device = "cuda"
+        main_config.device = torch.device("cuda")
         print(f"Using CUDA device: {torch.cuda.get_device_name(main_config.device)}")
     else:
         print("CUDA is not available.")
