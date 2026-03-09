@@ -42,7 +42,10 @@ class FeverStage1Dataset(Dataset):
         self.config = config
         self.samples = []
 
-        for row in data:
+        for i, row in enumerate(data):
+            if i % 1000 == 0:
+                print(f"Building dataset: {i}/{len(data)} claims processed", flush=True)
+            
             claim = row["claim"]
             label = row["label"]
 
