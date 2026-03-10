@@ -203,7 +203,7 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
         model.train()
         total_loss = 0
 
-        for batch in train_loader:
+        for i, batch in enumerate(train_loader):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             token_type_ids = batch["token_type_ids"].to(device)
@@ -219,6 +219,8 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
             optimizer.step()
 
             total_loss += loss.item()
+            if i % 5000 == 0:
+                print(f"  Batch {i}/{len(train_loader)} — Loss: {loss.item():.4f}", flush=True)
 
         avg_loss = total_loss / len(train_loader)
         print(f"Epoch {epoch + 1}/{bert_config.epochs} — Loss: {avg_loss:.4f}", flush=True)
