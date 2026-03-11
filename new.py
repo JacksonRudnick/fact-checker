@@ -2,19 +2,20 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from pyexpat import model
+from select import epoll
 
+from networkx import out_degree_centrality
+from pandas.conftest import dropna
+from spacy.ml import init_chain
 import torch
 import pickle
+from torch.export import draft_export
 import torch.nn as nn
 from sklearn.metrics import precision_score, recall_score, f1_score
-from torch.utils.data import (
-        Dataset, 
-        DataLoader,
-        )
-from transformers import (
-        BertModel,
-        BertTokenizer,
-        )
+from torch.utils.data import (Dataset, DataLoader)
+from transformers import (BertModel, BertTokenizer)
+from torch_geometric.nn.models import GAT
 
 @dataclass
 class MainConfig:
@@ -35,6 +36,20 @@ class BertConfig:
     top_k: int = 5
     threshold: float = 0.5
     dropout: float = 0.1
+
+@dataclass
+class GatConfig:
+    output_dir: str = "outputs/gat-fact-verifier"
+    train_batch_size: int = 64
+    eval_batch_size: int = 64
+    in_channels: int = 512
+    hidden_channels: int = 256
+    out_channels: int = 3
+    num_heads: int = 8
+    num_layers: int = 4
+    dropout: float = 0.1
+    learning_rate: float = 2e-5
+    epochs: int = 3
 
 class FeverStage1Dataset(Dataset):
     def __init__(self, data: list[dict], tokenizer: BertTokenizer, config: BertConfig):
@@ -149,6 +164,23 @@ class BertRelevanceScorer(nn.Module):
                 )
         cls_token = outputs.last_hidden_state[:, 0, :]  # [batch_size, 768]
         return cls_token
+    
+class GATFactVerifier(nn.Module):
+    def __init__(self, config: GatConfig):
+        super().__init__()
+        self.gat = GAT(
+                in_channels=config.in_channels,
+                hidden_channels=config.hidden_channels,
+                out_channels=config.out_channels,
+                num_heads=config.num_heads,
+                num_layers=config.num_layers,
+                dropout=config.dropout
+                )
+        
+    # cosine similarity between evidence and evidence embeddings as edge weights
+    def forward(self, x, edge_index, edge_weight):
+        return self.gat(x, edge_index, edge_weight)
+        
 
 def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.device):
     # load data
@@ -227,10 +259,11 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
 
         evaluate_bert(model, test_loader, criterion, device)
 
+    Path(bert_config.output_dir).parent.mkdir(parents=True, exist_ok=True)
+
     # save model
     torch.save(model.state_dict(), Path(bert_config.output_dir) / "stage1.pt")
 
-    embeddings_path = Path(bert_config.output_dir) / "stage1_embeddings.pkl"
     run_stage1_inference(model, test_data, tokenizer, bert_config, device, embeddings_path)
 
 def evaluate_bert(model: BertRelevanceScorer, loader: DataLoader, criterion: nn.BCEWithLogitsLoss, device: torch.device):
@@ -355,6 +388,88 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
     return results
 
 
+def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.device):
+    # load stage 1 embeddings
+    stage1_results = load_stage1_embeddings(embeddings_path)
+
+    model = GATFactVerifier(gat_config).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=gat_config.learning_rate)
+    criterion = nn.CrossEntropyLoss()
+
+    for epoch in range(gat_config.epochs):
+        model.train()
+        total_loss = 0
+
+        for i, result in enumerate(stage1_results):
+            claim_id = result["claim_id"]
+            label = result["label"]
+            top_k_embeddings = result["top_k_embeddings"]
+
+            if top_k_embeddings is None:
+                continue
+
+            # create a fully connected graph among the top-k sentences
+            num_nodes = top_k_embeddings.size(0)
+            edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device) # [2, num_edges]
+            edge_weight = torch.cosine_similarity(
+                    top_k_embeddings[edge_index[0]], 
+                    top_k_embeddings[edge_index[1]]
+                    ).to(device)
+
+            # forward pass
+            logits = model(top_k_embeddings.to(device), edge_index, edge_weight)
+            loss = criterion(logits, torch.tensor([label], dtype=torch.long).to(device))
+            total_loss += loss.item()
+
+            if i % 1000 == 0:
+                print(f"  Claim {i}/{len(stage1_results)} — Loss: {loss.item():.4f}", flush=True)
+
+        print(f"Epoch {epoch+1}/{gat_config.epochs}, Loss: {total_loss/len(stage1_results):.4f}")
+
+        evaluate_gat(model, stage1_results, device)
+
+    Path(gat_config.output_dir).parent.mkdir(parents=True, exist_ok=True)
+
+    output_path = Path(gat_config.output_dir) / "gat_verifier.pt"
+    torch.save(model.state_dict(), output_path)
+    print(f"Saved GAT verifier to: {output_path}")
+    
+def evaluate_gat(model: GATFactVerifier, stage1_results: list[dict], device: torch.device]):
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for result in stage1_results:
+            label = result["label"]
+            top_k_embeddings = result["top_k_embeddings"]
+
+            if top_k_embeddings is None:
+                continue
+
+            num_nodes = top_k_embeddings.size(0)
+            edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device) # [2, num_edges]
+            edge_weight = torch.cosine_similarity(
+                    top_k_embeddings[edge_index[0]], 
+                    top_k_embeddings[edge_index[1]]
+                    ).to(device)
+
+            logits = model(top_k_embeddings.to(device), edge_index, edge_weight)
+            pred_label = logits.argmax(dim=-1).item()
+
+            all_preds.append(pred_label)
+            all_labels.append(label)
+
+    accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
+    precision = precision_score(all_labels, all_preds, zero_division=0)
+    recall = recall_score(all_labels, all_preds, zero_division=0)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
+
+    print(f"  Accuracy:  {accuracy:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall:    {recall:.4f}")
+    print(f"  F1:        {f1:.4f}")
+
 def load_stage1_embeddings(path: Path) -> list[dict]:
     with open(path, "rb") as f:
         return pickle.load(f)
@@ -380,11 +495,15 @@ def load_jsonl(path: Path) -> list[dict]:
 
 main_config = MainConfig()
 bert_config = BertConfig()
+gat_config = GatConfig()
+
+embeddings_path = Path(bert_config.output_dir) / "stage1_embeddings.pkl"
 
 def main():
     load_cuda()
 
     train_bert(main_config, bert_config, device=main_config.device)
+    train_gat(main_config, gat_config, device=main_config.device)
 
 if __name__ == "__main__":
     main()
