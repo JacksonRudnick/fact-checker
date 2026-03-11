@@ -2,15 +2,9 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from pyexpat import model
-from select import epoll
 
-from networkx import out_degree_centrality
-from pandas.conftest import dropna
-from spacy.ml import init_chain
 import torch
 import pickle
-from torch.export import draft_export
 import torch.nn as nn
 from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.utils.data import (Dataset, DataLoader)
@@ -42,7 +36,7 @@ class GatConfig:
     output_dir: str = "outputs/gat-fact-verifier"
     train_batch_size: int = 64
     eval_batch_size: int = 64
-    in_channels: int = 512
+    in_channels: int = 768
     hidden_channels: int = 256
     out_channels: int = 3
     num_heads: int = 8
@@ -105,9 +99,9 @@ class FeverStage1Dataset(Dataset):
                 )
         
         return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "token_type_ids": encoding["token_type_ids"].squeeze(0),
+            "input_ids": encoding["input_ids"].squeeze(0), # type: ignore
+            "attention_mask": encoding["attention_mask"].squeeze(0), # type: ignore
+            "token_type_ids": encoding["token_type_ids"].squeeze(0), # type: ignore
             "label": torch.tensor(sample["label"], dtype=torch.float),
             "claim_id": sample["claim_id"],
             "doc_id": sample["doc_id"],
@@ -171,15 +165,23 @@ class GATFactVerifier(nn.Module):
         self.gat = GAT(
                 in_channels=config.in_channels,
                 hidden_channels=config.hidden_channels,
-                out_channels=config.out_channels,
+                out_channels=config.hidden_channels,
                 num_heads=config.num_heads,
                 num_layers=config.num_layers,
                 dropout=config.dropout
                 )
         
+        self.classifier = nn.Linear(config.hidden_channels, config.out_channels)
+        
     # cosine similarity between evidence and evidence embeddings as edge weights
     def forward(self, x, edge_index, edge_weight):
-        return self.gat(x, edge_index, edge_weight)
+        if x.size(0) == 1:
+            return self.classifier(x)
+        
+        x = self.gat(x, edge_index, edge_weight)
+        x = x.mean(dim=0, keepdim=True)  # pool nodes -> [1, out_channels]
+        x = self.classifier(x)  # [num_nodes, out_channels]
+        return x
         
 
 def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.device):
@@ -259,7 +261,7 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
 
         evaluate_bert(model, test_loader, criterion, device)
 
-    Path(bert_config.output_dir).parent.mkdir(parents=True, exist_ok=True)
+    Path(bert_config.output_dir).mkdir(parents=True, exist_ok=True)
 
     # save model
     torch.save(model.state_dict(), Path(bert_config.output_dir) / "stage1.pt")
@@ -330,9 +332,23 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                     "claim": claim,
                     "label": label,
                     "top_k_embeddings": None,
-                    "top_k_sentences": None
+                    "top_k_sentences": None,
+                    "claim_embedding": None
                     })
                 continue
+
+            # embed the claim itself
+            claim_encoding = tokenizer(
+                claim,
+                max_length=config.max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt"
+            )
+            claim_input_ids = claim_encoding["input_ids"].to(device) # type: ignore
+            claim_attention_mask = claim_encoding["attention_mask"].to(device) # type: ignore
+            claim_token_type_ids = claim_encoding["token_type_ids"].to(device) # type: ignore
+            claim_embedding = model.get_embeddings(claim_input_ids, claim_attention_mask, claim_token_type_ids)  # [1, 768]
 
             # tokenize all candidates
             encodings = tokenizer(
@@ -359,6 +375,7 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                     "claim_id": claim_id,
                     "claim": claim,
                     "label": label,
+                    "claim_embedding": claim_embedding.cpu(),
                     "top_k_embeddings": None,
                     "top_k_sentences": None
                     })
@@ -375,6 +392,7 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
                 "claim_id": claim_id,
                 "claim": claim,
                 "label": label,
+                "claim_embedding": claim_embedding.cpu(),
                 "top_k_embeddings": top_k_embeddings,
                 "top_k_sentences": top_k_sentences
                 })
@@ -403,21 +421,30 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
         for i, result in enumerate(stage1_results):
             claim_id = result["claim_id"]
             label = result["label"]
+            label = LABEL_MAP[label]
             top_k_embeddings = result["top_k_embeddings"]
+            claim_embedding = result["claim_embedding"]
 
-            if top_k_embeddings is None:
+            if claim_embedding is None:
                 continue
 
-            # create a fully connected graph among the top-k sentences
-            num_nodes = top_k_embeddings.size(0)
-            edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device) # [2, num_edges]
-            edge_weight = torch.cosine_similarity(
-                    top_k_embeddings[edge_index[0]], 
-                    top_k_embeddings[edge_index[1]]
-                    ).to(device)
+            if top_k_embeddings is None:
+                # NEI: graph is just the claim node
+                x = claim_embedding.to(device)  # [1, 768]
+                edge_index = torch.zeros(2, 0, dtype=torch.long).to(device)  # no edges
+                edge_weight = torch.zeros(0).to(device)
+            else:
+                # prepend claim node to sentence nodes
+                x = torch.cat([claim_embedding.to(device), top_k_embeddings.to(device)], dim=0)
+                num_nodes = x.size(0)
+                edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device)
+                edge_weight = torch.cosine_similarity(
+                    x[edge_index[0]],
+                    x[edge_index[1]]
+                ).to(device)
 
             # forward pass
-            logits = model(top_k_embeddings.to(device), edge_index, edge_weight)
+            logits = model(x, edge_index, edge_weight)
             loss = criterion(logits, torch.tensor([label], dtype=torch.long).to(device))
             total_loss += loss.item()
 
@@ -428,13 +455,13 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
 
         evaluate_gat(model, stage1_results, device)
 
-    Path(gat_config.output_dir).parent.mkdir(parents=True, exist_ok=True)
+    Path(gat_config.output_dir).mkdir(parents=True, exist_ok=True)
 
     output_path = Path(gat_config.output_dir) / "gat_verifier.pt"
     torch.save(model.state_dict(), output_path)
     print(f"Saved GAT verifier to: {output_path}")
     
-def evaluate_gat(model: GATFactVerifier, stage1_results: list[dict], device: torch.device]):
+def evaluate_gat(model: GATFactVerifier, stage1_results: list[dict], device: torch.device):
     model.eval()
     all_preds = []
     all_labels = []
@@ -442,28 +469,38 @@ def evaluate_gat(model: GATFactVerifier, stage1_results: list[dict], device: tor
     with torch.no_grad():
         for result in stage1_results:
             label = result["label"]
+            label = LABEL_MAP[label]
             top_k_embeddings = result["top_k_embeddings"]
+            claim_embedding = result["claim_embedding"]
 
-            if top_k_embeddings is None:
+            if claim_embedding is None:
                 continue
 
-            num_nodes = top_k_embeddings.size(0)
-            edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device) # [2, num_edges]
-            edge_weight = torch.cosine_similarity(
-                    top_k_embeddings[edge_index[0]], 
-                    top_k_embeddings[edge_index[1]]
-                    ).to(device)
+            if top_k_embeddings is None:
+                # NEI: graph is just the claim node
+                x = claim_embedding.to(device)  # [1, 768]
+                edge_index = torch.zeros(2, 0, dtype=torch.long).to(device)  # no edges
+                edge_weight = torch.zeros(0).to(device)
+            else:
+                # prepend claim node to sentence nodes
+                x = torch.cat([claim_embedding.to(device), top_k_embeddings.to(device)], dim=0)
+                num_nodes = x.size(0)
+                edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device)
+                edge_weight = torch.cosine_similarity(
+                    x[edge_index[0]],
+                    x[edge_index[1]]
+                ).to(device)
 
-            logits = model(top_k_embeddings.to(device), edge_index, edge_weight)
+            logits = model(x, edge_index, edge_weight)
             pred_label = logits.argmax(dim=-1).item()
 
             all_preds.append(pred_label)
             all_labels.append(label)
 
     accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
-    precision = precision_score(all_labels, all_preds, zero_division=0)
-    recall = recall_score(all_labels, all_preds, zero_division=0)
-    f1 = f1_score(all_labels, all_preds, zero_division=0)
+    precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
+    recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
+    f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
 
     print(f"  Accuracy:  {accuracy:.4f}")
     print(f"  Precision: {precision:.4f}")
@@ -492,6 +529,13 @@ def load_jsonl(path: Path) -> list[dict]:
             rows.append(json.loads(line))
     return rows
 
+def rerun_stage1_inference():
+    # regenerate embeddings with claim_embedding included
+    tokenizer = BertTokenizer.from_pretrained(bert_config.tokenizer_name)
+    model = BertRelevanceScorer(bert_config).to(main_config.device)
+    model.load_state_dict(torch.load(Path(bert_config.output_dir) / "stage1.pt"))
+    test_data = load_jsonl(Path(main_config.test_path))
+    run_stage1_inference(model, test_data, tokenizer, bert_config, main_config.device, embeddings_path)
 
 main_config = MainConfig()
 bert_config = BertConfig()
@@ -499,10 +543,15 @@ gat_config = GatConfig()
 
 embeddings_path = Path(bert_config.output_dir) / "stage1_embeddings.pkl"
 
+LABEL_MAP = {"SUPPORTS": 0, "REFUTES": 1, "NOT ENOUGH INFO": 2}
+
 def main():
     load_cuda()
 
-    train_bert(main_config, bert_config, device=main_config.device)
+    # train_bert(main_config, bert_config, device=main_config.device)
+    
+    rerun_stage1_inference()
+    
     train_gat(main_config, gat_config, device=main_config.device)
 
 if __name__ == "__main__":
