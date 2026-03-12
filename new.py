@@ -1,4 +1,3 @@
-
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,9 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.utils.data import (Dataset, DataLoader)
 from transformers import (BertModel, BertTokenizer)
 from torch_geometric.nn.models import GAT
+from torch_geometric.data import (Data, Batch)
+from torch_geometric.nn import global_mean_pool
+from torch_geometric.loader import DataLoader as PyGDataLoader
 
 @dataclass
 class MainConfig:
@@ -42,7 +44,7 @@ class GatConfig:
     num_heads: int = 8
     num_layers: int = 4
     dropout: float = 0.1
-    learning_rate: float = 2e-5
+    learning_rate: float = 1e-3
     epochs: int = 3
 
 class FeverStage1Dataset(Dataset):
@@ -166,20 +168,22 @@ class GATFactVerifier(nn.Module):
                 in_channels=config.in_channels,
                 hidden_channels=config.hidden_channels,
                 out_channels=config.hidden_channels,
-                num_heads=config.num_heads,
+                heads=config.num_heads,
                 num_layers=config.num_layers,
                 dropout=config.dropout
                 )
         
+        self.projection = nn.Linear(config.in_channels, config.hidden_channels)
         self.classifier = nn.Linear(config.hidden_channels, config.out_channels)
         
     # cosine similarity between evidence and evidence embeddings as edge weights
-    def forward(self, x, edge_index, edge_weight):
+    def forward(self, x, edge_index, edge_weight, batch):
         if x.size(0) == 1:
+            x = self.projection(x)  # project claim embedding to hidden size
             return self.classifier(x)
         
         x = self.gat(x, edge_index, edge_weight)
-        x = x.mean(dim=0, keepdim=True)  # pool nodes -> [1, out_channels]
+        x = global_mean_pool(x, batch)  # pool nodes -> [1, out_channels]
         x = self.classifier(x)  # [num_nodes, out_channels]
         return x
         
@@ -266,7 +270,7 @@ def train_bert(main_config: MainConfig, bert_config: BertConfig, device: torch.d
     # save model
     torch.save(model.state_dict(), Path(bert_config.output_dir) / "stage1.pt")
 
-    run_stage1_inference(model, test_data, tokenizer, bert_config, device, embeddings_path)
+    run_stage1_inference(model, test_data, tokenizer, bert_config, device, test_embeddings_path)
 
 def evaluate_bert(model: BertRelevanceScorer, loader: DataLoader, criterion: nn.BCEWithLogitsLoss, device: torch.device):
     model.eval()
@@ -408,52 +412,40 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
 
 def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.device):
     # load stage 1 embeddings
-    stage1_results = load_stage1_embeddings(embeddings_path)
+    train_embeddings = load_embeddings(train_embeddings_path)
+    test_embeddings = load_embeddings(test_embeddings_path)
 
     model = GATFactVerifier(gat_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=gat_config.learning_rate)
     criterion = nn.CrossEntropyLoss()
 
+    train_graphs = build_gat_dataset(train_embeddings)
+    test_graphs = build_gat_dataset(test_embeddings)
+
+    train_loader = PyGDataLoader(train_graphs, batch_size=gat_config.train_batch_size, shuffle=True)
+    test_loader = PyGDataLoader(test_graphs, batch_size=gat_config.eval_batch_size, shuffle=False)
+
     for epoch in range(gat_config.epochs):
         model.train()
         total_loss = 0
 
-        for i, result in enumerate(stage1_results):
-            claim_id = result["claim_id"]
-            label = result["label"]
-            label = LABEL_MAP[label]
-            top_k_embeddings = result["top_k_embeddings"]
-            claim_embedding = result["claim_embedding"]
+        for i, batch in enumerate(train_loader):
+            batch = batch.to(device)
+    
+            logits = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            loss = criterion(logits, batch.y.squeeze(-1))
 
-            if claim_embedding is None:
-                continue
-
-            if top_k_embeddings is None:
-                # NEI: graph is just the claim node
-                x = claim_embedding.to(device)  # [1, 768]
-                edge_index = torch.zeros(2, 0, dtype=torch.long).to(device)  # no edges
-                edge_weight = torch.zeros(0).to(device)
-            else:
-                # prepend claim node to sentence nodes
-                x = torch.cat([claim_embedding.to(device), top_k_embeddings.to(device)], dim=0)
-                num_nodes = x.size(0)
-                edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device)
-                edge_weight = torch.cosine_similarity(
-                    x[edge_index[0]],
-                    x[edge_index[1]]
-                ).to(device)
-
-            # forward pass
-            logits = model(x, edge_index, edge_weight)
-            loss = criterion(logits, torch.tensor([label], dtype=torch.long).to(device))
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
             total_loss += loss.item()
 
             if i % 1000 == 0:
-                print(f"  Claim {i}/{len(stage1_results)} — Loss: {loss.item():.4f}", flush=True)
+                print(f"  Claim {i}/{len(train_loader)} — Loss: {loss.item():.4f}", flush=True)
 
-        print(f"Epoch {epoch+1}/{gat_config.epochs}, Loss: {total_loss/len(stage1_results):.4f}")
+        print(f"Epoch {epoch+1}/{gat_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
 
-        evaluate_gat(model, stage1_results, device)
+        evaluate_gat(model, test_embeddings, device)
 
     Path(gat_config.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -461,13 +453,13 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
     torch.save(model.state_dict(), output_path)
     print(f"Saved GAT verifier to: {output_path}")
     
-def evaluate_gat(model: GATFactVerifier, stage1_results: list[dict], device: torch.device):
+def evaluate_gat(model: GATFactVerifier, test_embeddings: list[dict], device: torch.device):
     model.eval()
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
-        for result in stage1_results:
+        for result in test_embeddings:
             label = result["label"]
             label = LABEL_MAP[label]
             top_k_embeddings = result["top_k_embeddings"]
@@ -507,7 +499,40 @@ def evaluate_gat(model: GATFactVerifier, stage1_results: list[dict], device: tor
     print(f"  Recall:    {recall:.4f}")
     print(f"  F1:        {f1:.4f}")
 
-def load_stage1_embeddings(path: Path) -> list[dict]:
+def result_to_graph(result, device):
+    label = LABEL_MAP[result["label"]]
+    claim_embedding = result["claim_embedding"]
+    top_k_embeddings = result["top_k_embeddings"]
+
+    if claim_embedding is None:
+        return None
+
+    if top_k_embeddings is None:
+        x = claim_embedding  # [1, 768]
+        edge_index = torch.zeros(2, 0, dtype=torch.long)
+        edge_weight = torch.zeros(0)
+    else:
+        x = torch.cat([claim_embedding, top_k_embeddings], dim=0)
+        num_nodes = x.size(0)
+        edge_index = torch.combinations(torch.arange(num_nodes), r=2).t()
+        edge_weight = torch.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
+
+    return Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_weight,
+        y=torch.tensor([label], dtype=torch.long)
+    )
+
+def build_gat_dataset(embeddings):
+    graphs = []
+    for result in embeddings:
+        graph = result_to_graph(result, device=main_config.device)
+        if graph is not None:
+            graphs.append(graph)
+    return graphs
+
+def load_embeddings(path: Path) -> list[dict]:
     with open(path, "rb") as f:
         return pickle.load(f)
 
@@ -530,18 +555,25 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 def rerun_stage1_inference():
-    # regenerate embeddings with claim_embedding included
     tokenizer = BertTokenizer.from_pretrained(bert_config.tokenizer_name)
     model = BertRelevanceScorer(bert_config).to(main_config.device)
     model.load_state_dict(torch.load(Path(bert_config.output_dir) / "stage1.pt"))
+    
+    train_data = load_jsonl(Path(main_config.train_path))
     test_data = load_jsonl(Path(main_config.test_path))
-    run_stage1_inference(model, test_data, tokenizer, bert_config, main_config.device, embeddings_path)
+    
+    print("Running inference on train data...", flush=True)
+    run_stage1_inference(model, train_data, tokenizer, bert_config, main_config.device, train_embeddings_path)
+    
+    print("Running inference on test data...", flush=True)
+    run_stage1_inference(model, test_data, tokenizer, bert_config, main_config.device, test_embeddings_path)
 
 main_config = MainConfig()
 bert_config = BertConfig()
 gat_config = GatConfig()
 
-embeddings_path = Path(bert_config.output_dir) / "stage1_embeddings.pkl"
+train_embeddings_path = Path(bert_config.output_dir) / "stage1_train_embeddings.pkl"
+test_embeddings_path = Path(bert_config.output_dir) / "stage1_test_embeddings.pkl"
 
 LABEL_MAP = {"SUPPORTS": 0, "REFUTES": 1, "NOT ENOUGH INFO": 2}
 
