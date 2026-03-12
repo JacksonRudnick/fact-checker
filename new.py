@@ -510,7 +510,7 @@ def result_to_graph(result, model: BertRelevanceScorer, tokenizer: BertTokenizer
 
         with torch.no_grad():
             outputs = model.bert(**encoding)
-            hidden_states = outputs.last_hidden_state.squeeze(0)  # [seq_len, 768]
+            hidden_states = outputs.last_hidden_state.squeeze(0).cpu()  # [seq_len, 768]
 
         # average wordpiece embeddings per word
         unique_word_ids = sorted(set(w for w in word_ids if w is not None))
@@ -581,6 +581,10 @@ def build_gat_dataset(embeddings, model, tokenizer, device, cache_path: Path):
         graph = result_to_graph(result, model, tokenizer, device)
         if graph is not None:
             graphs.append(graph)
+
+        if i % 10000 == 0 and i > 0:
+            torch.save(graphs, cache_path)
+            print(f"Checkpoint saved at {i} graphs", flush=True)
 
     torch.save(graphs, cache_path)
     print(f"Saved {len(graphs)} graphs to {cache_path}", flush=True)
