@@ -18,6 +18,3 @@ class cfg:
 
 tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
 model = AutoModelForSequenceClassification.from_pretrained(cfg.model_name, num_labels=cfg.num_labels).to(cfg.device)
-
-
-def main():

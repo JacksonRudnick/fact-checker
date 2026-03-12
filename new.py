@@ -4,12 +4,13 @@ from pathlib import Path
 
 import torch
 import pickle
+import spacy
 import torch.nn as nn
 from sklearn.metrics import precision_score, recall_score, f1_score
 from torch.utils.data import (Dataset, DataLoader)
 from transformers import (BertModel, BertTokenizer)
 from torch_geometric.nn.models import GAT
-from torch_geometric.data import (Data, Batch)
+from torch_geometric.data import Data
 from torch_geometric.nn import global_mean_pool
 from torch_geometric.loader import DataLoader as PyGDataLoader
 
@@ -46,6 +47,9 @@ class GatConfig:
     dropout: float = 0.1
     learning_rate: float = 1e-3
     epochs: int = 10
+    nlp = spacy.load("en_core_web_sm")
+    train_cache_path = "outputs/gat-fact-verifier/train_graphs.pt"
+    eval_cache_path = "outputs/gat-fact-verifier/test_graphs.pt"
 
 class FeverStage1Dataset(Dataset):
     def __init__(self, data: list[dict], tokenizer: BertTokenizer, config: BertConfig):
@@ -176,10 +180,10 @@ class GATFactVerifier(nn.Module):
         self.classifier = nn.Linear(config.hidden_channels, config.out_channels)
         
     # cosine similarity between evidence and evidence embeddings as edge weights
-    def forward(self, x, edge_index, edge_weight, batch):
-        x = self.gat(x, edge_index, edge_weight)
-        x = global_mean_pool(x, batch)  # pool nodes -> [1, out_channels]
-        x = self.classifier(x)  # [num_nodes, out_channels]
+    def forward(self, x, edge_index, batch):
+        x = self.gat(x, edge_index)
+        x = global_mean_pool(x, batch)
+        x = self.classifier(x)
         return x
         
 
@@ -405,19 +409,22 @@ def run_stage1_inference(model: BertRelevanceScorer, data: list[dict], tokenizer
     return results
 
 
-def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.device):
-    # load stage 1 embeddings
+def train_gat(main_config, gat_config, device):
     train_embeddings = load_embeddings(train_embeddings_path)
     test_embeddings = load_embeddings(test_embeddings_path)
+
+    tokenizer = BertTokenizer.from_pretrained(bert_config.tokenizer_name)
+    bert_model = BertRelevanceScorer(bert_config).to(device)
+    bert_model.load_state_dict(torch.load(Path(bert_config.output_dir) / "stage1.pt"))
+    bert_model.eval()
+
+    train_graphs = build_gat_dataset(train_embeddings, bert_model, tokenizer, device, gat_config.train_cache_path)
+    test_graphs = build_gat_dataset(test_embeddings, bert_model, tokenizer, device, gat_config.eval_cache_path)
 
     model = GATFactVerifier(gat_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=gat_config.learning_rate)
     criterion = nn.CrossEntropyLoss()
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gat_config.epochs)
-
-
-    train_graphs = build_gat_dataset(train_embeddings)
-    test_graphs = build_gat_dataset(test_embeddings)
 
     print(f"Train graphs: {len(train_graphs)}", flush=True)
     print(f"Test graphs: {len(test_graphs)}", flush=True)
@@ -432,18 +439,18 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
         for i, batch in enumerate(train_loader):
             batch = batch.to(device)
     
-            logits = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            logits = model(batch.x, batch.edge_index, batch.batch)
             loss = criterion(logits, batch.y.squeeze(-1))
 
             loss.backward()
             optimizer.step()
-            scheduler.step()
             optimizer.zero_grad()
             total_loss += loss.item()
 
             if i % 1000 == 0:
                 print(f"  Claim {i}/{len(train_loader)} — Loss: {loss.item():.4f}", flush=True)
 
+        scheduler.step()
         print(f"Epoch {epoch+1}/{gat_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
 
         evaluate_gat(model, test_loader, device)
@@ -462,7 +469,7 @@ def evaluate_gat(model: GATFactVerifier, test_loader: PyGDataLoader, device: tor
     with torch.no_grad():
         for batch in test_loader:
             batch = batch.to(device)
-            logits = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            logits = model(batch.x, batch.edge_index, batch.batch)
             preds = logits.argmax(dim=-1).cpu().tolist()
             labels = batch.y.squeeze(-1).cpu().tolist()
             all_preds.extend(preds)
@@ -478,37 +485,105 @@ def evaluate_gat(model: GATFactVerifier, test_loader: PyGDataLoader, device: tor
     print(f"  Recall:    {recall:.4f}")
     print(f"  F1:        {f1:.4f}")
 
-def result_to_graph(result):
+def result_to_graph(result, model: BertRelevanceScorer, tokenizer: BertTokenizer, device):
     label = LABEL_MAP[result["label"]]
-    claim_embedding = result["claim_embedding"]
-    top_k_embeddings = result["top_k_embeddings"]
+    claim = result["claim"]
+    top_k_sentences = result["top_k_sentences"]
 
-    if claim_embedding is None:
-        return None
+    # sentences is a list of dicts with "sentence" key, or None for NEI
+    sentences = [s["sentence"] for s in top_k_sentences] if top_k_sentences else []
+    all_texts = [claim] + sentences
 
-    if top_k_embeddings is None:
-        x = claim_embedding  # [1, 768]
-        edge_index = torch.zeros(2, 0, dtype=torch.long)
-        edge_weight = torch.zeros(0)
+    # grab bert embeddings for each text
+    all_node_embeddings = []  # list of tensors, one per text, each [num_words, 768]
+
+    for text in all_texts:
+        encoding = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=bert_config.max_length,
+            return_offsets_mapping=False
+        ).to(device)
+
+        word_ids = encoding.word_ids()
+
+        with torch.no_grad():
+            outputs = model.bert(**encoding)
+            hidden_states = outputs.last_hidden_state.squeeze(0)  # [seq_len, 768]
+
+        # average wordpiece embeddings per word
+        unique_word_ids = sorted(set(w for w in word_ids if w is not None))
+        word_embeddings = []
+        for word_idx in unique_word_ids:
+            token_indices = [i for i, w in enumerate(word_ids) if w == word_idx]
+            word_emb = hidden_states[token_indices].mean(dim=0)
+            word_embeddings.append(word_emb)
+
+        all_node_embeddings.append(torch.stack(word_embeddings))  # [num_words, 768]
+
+    # spacy dependency edges
+    all_docs = [gat_config.nlp(text) for text in all_texts]
+
+    node_offsets = []  # starting node index for each text
+    total_nodes = 0
+    for emb in all_node_embeddings:
+        node_offsets.append(total_nodes)
+        total_nodes += emb.size(0)
+
+    x = torch.cat(all_node_embeddings, dim=0)  # [total_nodes, 768]
+
+    edge_src = []
+    edge_dst = []
+
+    # dependency edges within each text
+    for text_idx, doc in enumerate(all_docs):
+        offset = node_offsets[text_idx]
+        for token in doc:
+            if token.head != token:
+                src = offset + token.head.i
+                dst = offset + token.i
+                edge_src.append(src)
+                edge_dst.append(dst)
+
+    # shared token edges between claim and each evidence sentence
+    claim_doc = all_docs[0]
+    claim_offset = node_offsets[0]
+    for sent_idx, sent_doc in enumerate(all_docs[1:], start=1):
+        sent_offset = node_offsets[sent_idx]
+        for claim_token in claim_doc:
+            for sent_token in sent_doc:
+                if claim_token.text.lower() == sent_token.text.lower():
+                    edge_src.append(claim_offset + claim_token.i)
+                    edge_dst.append(sent_offset + sent_token.i)
+
+    if edge_src:
+        edge_index = torch.tensor([edge_src, edge_dst], dtype=torch.long)
     else:
-        x = torch.cat([claim_embedding, top_k_embeddings], dim=0)
-        num_nodes = x.size(0)
-        edge_index = torch.combinations(torch.arange(num_nodes), r=2).t()
-        edge_weight = torch.cosine_similarity(x[edge_index[0]], x[edge_index[1]])
+        edge_index = torch.zeros(2, 0, dtype=torch.long)
 
     return Data(
         x=x,
         edge_index=edge_index,
-        edge_attr=edge_weight,
         y=torch.tensor([label], dtype=torch.long)
     )
 
-def build_gat_dataset(embeddings):
+def build_gat_dataset(embeddings, model, tokenizer, device, cache_path: Path):
+    cache_path = Path(cache_path)
+    if cache_path.exists():
+        print(f"Loading cached graphs from {cache_path}", flush=True)
+        return torch.load(cache_path, weights_only=False)
+
     graphs = []
-    for result in embeddings:
-        graph = result_to_graph(result)
+    for i, result in enumerate(embeddings):
+        if i % 1000 == 0:
+            print(f"Building graphs: {i}/{len(embeddings)}", flush=True)
+        graph = result_to_graph(result, model, tokenizer, device)
         if graph is not None:
             graphs.append(graph)
+
+    torch.save(graphs, cache_path)
+    print(f"Saved {len(graphs)} graphs to {cache_path}", flush=True)
     return graphs
 
 def load_embeddings(path: Path) -> list[dict]:
