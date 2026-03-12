@@ -419,6 +419,9 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
     train_graphs = build_gat_dataset(train_embeddings)
     test_graphs = build_gat_dataset(test_embeddings)
 
+    print(f"Train graphs: {len(train_graphs)}", flush=True)
+    print(f"Test graphs: {len(test_graphs)}", flush=True)
+
     train_loader = PyGDataLoader(train_graphs, batch_size=gat_config.train_batch_size, shuffle=True)
     test_loader = PyGDataLoader(test_graphs, batch_size=gat_config.eval_batch_size, shuffle=False)
 
