@@ -39,13 +39,13 @@ class GatConfig:
     train_batch_size: int = 64
     eval_batch_size: int = 64
     in_channels: int = 768
-    hidden_channels: int = 256
+    hidden_channels: int = 512
     out_channels: int = 3
     num_heads: int = 8
-    num_layers: int = 4
+    num_layers: int = 6
     dropout: float = 0.1
     learning_rate: float = 1e-3
-    epochs: int = 3
+    epochs: int = 10
 
 class FeverStage1Dataset(Dataset):
     def __init__(self, data: list[dict], tokenizer: BertTokenizer, config: BertConfig):
@@ -413,6 +413,8 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
     model = GATFactVerifier(gat_config).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=gat_config.learning_rate)
     criterion = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=gat_config.epochs)
+
 
     train_graphs = build_gat_dataset(train_embeddings)
     test_graphs = build_gat_dataset(test_embeddings)
@@ -432,6 +434,7 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
 
             loss.backward()
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
             total_loss += loss.item()
 
