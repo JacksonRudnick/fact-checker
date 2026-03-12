@@ -173,15 +173,10 @@ class GATFactVerifier(nn.Module):
                 dropout=config.dropout
                 )
         
-        self.projection = nn.Linear(config.in_channels, config.hidden_channels)
         self.classifier = nn.Linear(config.hidden_channels, config.out_channels)
         
     # cosine similarity between evidence and evidence embeddings as edge weights
     def forward(self, x, edge_index, edge_weight, batch):
-        if x.size(0) == 1:
-            x = self.projection(x)  # project claim embedding to hidden size
-            return self.classifier(x)
-        
         x = self.gat(x, edge_index, edge_weight)
         x = global_mean_pool(x, batch)  # pool nodes -> [1, out_channels]
         x = self.classifier(x)  # [num_nodes, out_channels]
@@ -445,7 +440,7 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
 
         print(f"Epoch {epoch+1}/{gat_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
 
-        evaluate_gat(model, test_embeddings, device)
+        evaluate_gat(model, test_loader, device)
 
     Path(gat_config.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -453,41 +448,19 @@ def train_gat(main_config: MainConfig, gat_config: GatConfig, device: torch.devi
     torch.save(model.state_dict(), output_path)
     print(f"Saved GAT verifier to: {output_path}")
     
-def evaluate_gat(model: GATFactVerifier, test_embeddings: list[dict], device: torch.device):
+def evaluate_gat(model: GATFactVerifier, test_loader: PyGDataLoader, device: torch.device):
     model.eval()
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
-        for result in test_embeddings:
-            label = result["label"]
-            label = LABEL_MAP[label]
-            top_k_embeddings = result["top_k_embeddings"]
-            claim_embedding = result["claim_embedding"]
-
-            if claim_embedding is None:
-                continue
-
-            if top_k_embeddings is None:
-                # NEI: graph is just the claim node
-                x = claim_embedding.to(device)  # [1, 768]
-                edge_index = torch.zeros(2, 0, dtype=torch.long).to(device)  # no edges
-                edge_weight = torch.zeros(0).to(device)
-            else:
-                # prepend claim node to sentence nodes
-                x = torch.cat([claim_embedding.to(device), top_k_embeddings.to(device)], dim=0)
-                num_nodes = x.size(0)
-                edge_index = torch.combinations(torch.arange(num_nodes), r=2).t().to(device)
-                edge_weight = torch.cosine_similarity(
-                    x[edge_index[0]],
-                    x[edge_index[1]]
-                ).to(device)
-
-            logits = model(x, edge_index, edge_weight)
-            pred_label = logits.argmax(dim=-1).item()
-
-            all_preds.append(pred_label)
-            all_labels.append(label)
+        for batch in test_loader:
+            batch = batch.to(device)
+            logits = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            preds = logits.argmax(dim=-1).cpu().tolist()
+            labels = batch.y.squeeze(-1).cpu().tolist()
+            all_preds.extend(preds)
+            all_labels.extend(labels)
 
     accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
@@ -499,7 +472,7 @@ def evaluate_gat(model: GATFactVerifier, test_embeddings: list[dict], device: to
     print(f"  Recall:    {recall:.4f}")
     print(f"  F1:        {f1:.4f}")
 
-def result_to_graph(result, device):
+def result_to_graph(result):
     label = LABEL_MAP[result["label"]]
     claim_embedding = result["claim_embedding"]
     top_k_embeddings = result["top_k_embeddings"]
@@ -527,7 +500,7 @@ def result_to_graph(result, device):
 def build_gat_dataset(embeddings):
     graphs = []
     for result in embeddings:
-        graph = result_to_graph(result, device=main_config.device)
+        graph = result_to_graph(result)
         if graph is not None:
             graphs.append(graph)
     return graphs
@@ -582,7 +555,7 @@ def main():
 
     # train_bert(main_config, bert_config, device=main_config.device)
     
-    rerun_stage1_inference()
+    # rerun_stage1_inference()
     
     train_gat(main_config, gat_config, device=main_config.device)
 
