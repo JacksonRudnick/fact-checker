@@ -48,7 +48,7 @@ class GatConfig:
     num_layers: int = 6
     dropout: float = 0.1
     learning_rate: float = 1e-3
-    epochs: int = 20
+    epochs: int = 10
     nlp = spacy.load("en_core_web_sm")
     train_cache_path = "outputs/gat-fact-verifier/train_graphs.pt"
     eval_cache_path = "outputs/gat-fact-verifier/test_graphs.pt"
@@ -557,8 +557,9 @@ def result_to_graph(result, model: BertRelevanceScorer, tokenizer: BertTokenizer
         for claim_token in claim_doc:
             for sent_token in sent_doc:
                 if claim_token.text.lower() == sent_token.text.lower():
-                    edge_src.append(claim_offset + claim_token.i)
-                    edge_dst.append(sent_offset + sent_token.i)
+                    if not claim_token.is_stop:
+                        edge_src.append(claim_offset + claim_token.i)
+                        edge_dst.append(sent_offset + sent_token.i)
 
     if edge_src:
 
