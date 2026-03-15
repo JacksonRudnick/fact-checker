@@ -564,7 +564,7 @@ def result_to_graph(result, model: BertRelevanceScorer, tokenizer: BertTokenizer
     if edge_src:
 
         edge_index = torch.tensor([edge_src, edge_dst], dtype=torch.long)
-        valid_mask (edge_index[0] < total_nodes) & (edge_index[1] < total_nodes)
+        valid_mask = (edge_index[0] < total_nodes) & (edge_index[1] < total_nodes)
         edge_index = edge_index[:, valid_mask]
     else:
         edge_index = torch.zeros(2, 0, dtype=torch.long)
