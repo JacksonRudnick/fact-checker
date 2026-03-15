@@ -39,8 +39,8 @@ class BertConfig:
 @dataclass
 class GatConfig:
     output_dir: str = "outputs/gat-fact-verifier"
-    train_batch_size: int = 64
-    eval_batch_size: int = 64
+    train_batch_size: int = 128
+    eval_batch_size: int = 128
     in_channels: int = 768
     hidden_channels: int = 512
     out_channels: int = 3
@@ -48,7 +48,7 @@ class GatConfig:
     num_layers: int = 6
     dropout: float = 0.1
     learning_rate: float = 1e-3
-    epochs: int = 10
+    epochs: int = 20
     nlp = spacy.load("en_core_web_sm")
     train_cache_path = "outputs/gat-fact-verifier/train_graphs.pt"
     eval_cache_path = "outputs/gat-fact-verifier/test_graphs.pt"
