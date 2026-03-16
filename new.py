@@ -183,7 +183,6 @@ class GATFactVerifier(nn.Module):
         
     # cosine similarity between evidence and evidence embeddings as edge weights
     def forward(self, x, edge_index, batch):
-        x = x.float()
         x = self.gat(x, edge_index)
         x = global_mean_pool(x, batch)
         x = self.classifier(x)
@@ -534,7 +533,7 @@ def result_to_graph(result, model: BertRelevanceScorer, tokenizer: BertTokenizer
         node_offsets.append(total_nodes)
         total_nodes += emb.size(0)
 
-    x = torch.cat(all_node_embeddings, dim=0).half()  # [total_nodes, 768]
+    x = torch.cat(all_node_embeddings, dim=0)  # [total_nodes, 768]
 
     edge_src = []
     edge_dst = []
