@@ -13,7 +13,7 @@ class RobertaRelevanceScorer(nn.Module):
         for param in self.roberta.parameters():
             param.requires_grad = False
 
-        for param in self.roberta.encoder.layer[-3:].parameters():
+        for param in self.roberta.encoder.layer[-6:].parameters():
             param.requires_grad = True
 
         for param in self.roberta.pooler.parameters():  # type: ignore

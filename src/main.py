@@ -47,22 +47,22 @@ def main():
     load_cuda(main_config)
     device = main_config.device
 
-    #train_data = load_jsonl(Path(main_config.train_path))
-    #test_data = load_jsonl(Path(main_config.test_path))
+    train_data = load_jsonl(Path(main_config.train_path))
+    test_data = load_jsonl(Path(main_config.test_path))
 
-    #print(f"Train rows: {len(train_data)}", flush=True)
-    #print(f"Test rows: {len(test_data)}", flush=True)
+    print(f"Train rows: {len(train_data)}", flush=True)
+    print(f"Test rows: {len(test_data)}", flush=True)
 
     train_embeddings_path = Path(roberta_config.output_dir) / "stage1_train_embeddings.pkl"
     test_embeddings_path = Path(roberta_config.output_dir) / "stage1_test_embeddings.pkl"
 
     # Roberta
-    #model, tokenizer = train_roberta(main_config, roberta_config, device, train_data, test_data)
+    model, tokenizer = train_roberta(main_config, roberta_config, device, train_data, test_data)
 
     # Roberta Inference
-    #model, tokenizer = load_roberta_model(roberta_config, device)
-    #run_roberta_inference(model, train_data, tokenizer, roberta_config, device, train_embeddings_path)
-    #run_roberta_inference(model, test_data, tokenizer, roberta_config, device, test_embeddings_path)
+    model, tokenizer = load_roberta_model(roberta_config, device)
+    run_roberta_inference(model, train_data, tokenizer, roberta_config, device, train_embeddings_path)
+    run_roberta_inference(model, test_data, tokenizer, roberta_config, device, test_embeddings_path)
 
     # Stage 2 — Transformer over retrieved embeddings
     train_embeddings = load_embeddings(train_embeddings_path)
