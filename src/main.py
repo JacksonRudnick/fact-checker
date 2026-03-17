@@ -47,7 +47,7 @@ def main():
     load_cuda(main_config)
     device = main_config.device
 
-    train_data = load_jsonl(Path(main_config.train_path))
+    #train_data = load_jsonl(Path(main_config.train_path))
     #test_data = load_jsonl(Path(main_config.test_path))
 
     #print(f"Train rows: {len(train_data)}", flush=True)

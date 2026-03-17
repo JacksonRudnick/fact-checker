@@ -9,7 +9,7 @@ from transformers import RobertaTokenizer
 
 from config import RobertaConfig, GatConfig, LABEL_MAP, TransformerConfig
 from gat_model import GATFactVerifier
-from dataset import EmbeddingDataset, RobertaStage2Dataset, TransformerStage2Dataset, build_stage2_training_data
+from dataset import RobertaStage2Dataset, TransformerStage2Dataset
 from roberta_verifier_model import RobertaVerifier
 from transformer_model import TransformerFactVerifier
 
