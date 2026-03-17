@@ -7,7 +7,6 @@ from config import MainConfig, BertConfig, RobertaConfig, GatConfig, Transformer
 from train_stage1 import train_bert, train_roberta
 from train_stage2 import train_roberta_stage2, train_transformer
 from inference import run_bert_inference, run_roberta_inference, load_bert_model, load_roberta_model
-import train_stage2
 
 
 def load_cuda(main_config: MainConfig):
@@ -42,7 +41,7 @@ def main():
     gat_config = GatConfig()
     trans_config = TransformerConfig()
     roberta2_config = RobertaConfig()
-    
+
     roberta2_config.output_dir = "outputs/roberta-fact-verifier-stage2"
 
     load_cuda(main_config)
