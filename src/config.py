@@ -57,10 +57,10 @@ class GatConfig:
 class TransformerConfig:
     output_dir: str = "outputs/transformer-fact-verifier"
     d_model: int = 768
-    nhead: int = 8
-    num_layers: int = 6
+    nhead: int = 12
+    num_layers: int = 8
     dim_feedforward: int = 3072
-    dropout: float = 0.1
+    dropout: float = 0.2
     learning_rate: float = 1e-4
     epochs: int = 30
     train_batch_size: int = 128
