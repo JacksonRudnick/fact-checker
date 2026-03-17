@@ -170,3 +170,29 @@ class EmbeddingDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.samples[idx]
+    
+
+class Stage2Dataset(Dataset):
+    def __init__(self, records, tokenizer, config):
+        self.records = records
+        self.tokenizer = tokenizer
+        self.config = config
+
+    def __len__(self):
+        return len(self.records)
+
+    def __getitem__(self, idx):
+        r = self.records[idx]
+        encoding = self.tokenizer(
+            r["claim"],
+            r["evidence"],
+            max_length=self.config.max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        )
+        return {
+            "input_ids": encoding["input_ids"].squeeze(0),
+            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "label": torch.tensor(r["label"], dtype=torch.long)
+        }

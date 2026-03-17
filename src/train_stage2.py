@@ -5,10 +5,12 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from torch.utils.data import DataLoader
 from sklearn.metrics import precision_score, recall_score, f1_score
+from transformers import RobertaTokenizer
 
 from config import RobertaConfig, GatConfig, LABEL_MAP, TransformerConfig
 from gat_model import GATFactVerifier
-from dataset import EmbeddingDataset
+from roberta_model import RobertaVerifier
+from dataset import EmbeddingDataset, Stage2Dataset, Stage2Dataset
 from transformer_model import TransformerFactVerifier
 
 
@@ -214,6 +216,131 @@ def evaluate_transformer(model: TransformerFactVerifier, loader: DataLoader, dev
             labels = batch["label"].to(device)
 
             logits = model(x)
+            preds = logits.argmax(dim=-1).cpu().tolist()
+            all_preds.extend(preds)
+            all_labels.extend(labels.cpu().tolist())
+
+    accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
+    precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
+    recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
+    f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+
+    print(f"  Accuracy:  {accuracy:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall:    {recall:.4f}")
+    print(f"  F1:        {f1:.4f}")
+
+def build_stage2_training_data(data: list[dict]) -> list[dict]:
+    records = []
+    for row in data:
+        label = row.get("label")
+        if label not in LABEL_MAP:
+            continue
+
+        claim = str(row.get("claim", "")).strip()
+        if not claim:
+            continue
+
+        # get gold evidence sentence
+        evidence_text = "NO_EVIDENCE"
+        if label != "NOT ENOUGH INFO":
+            for ev in row.get("evidence", []):
+                if not isinstance(ev, dict):
+                    continue
+                doc_id = ev.get("doc_id")
+                sent_id = ev.get("sentence_id")
+                if doc_id is None or sent_id is None:
+                    continue
+                doc_sentences = row.get("articles", {}).get(doc_id, [])
+                if 0 <= sent_id < len(doc_sentences):
+                    evidence_text = str(doc_sentences[sent_id]).strip()
+                    if evidence_text:
+                        break
+
+        records.append({
+            "claim": claim,
+            "evidence": evidence_text,
+            "label": LABEL_MAP[label]
+        })
+
+    return records
+
+def train_roberta_stage2(main_config, roberta_config, device, train_data, test_data, test_embeddings):
+    tokenizer = RobertaTokenizer.from_pretrained(roberta_config.model_name)
+    
+    train_records = build_stage2_training_data(train_data)
+    
+    # for eval, use retrieved sentences from stage 1
+    test_records = []
+    for result in test_embeddings:
+        candidates = result.get("candidates", [])
+        if candidates:
+            top1 = max(candidates, key=lambda x: x["prob"])
+            evidence = top1["sentence"]
+        else:
+            evidence = "NO_EVIDENCE"
+        test_records.append({
+            "claim": result["claim"],
+            "evidence": evidence,
+            "label": LABEL_MAP[result["label"]]
+        })
+
+    model = RobertaVerifier(roberta_config).to(device)
+    optimizer = torch.optim.AdamW([
+        {"params": model.roberta.encoder.layer[-4:].parameters(), "lr": roberta_config.learning_rate},
+        {"params": model.roberta.pooler.parameters(), "lr": roberta_config.learning_rate}, # type: ignore
+        {"params": model.classifier.parameters(), "lr": roberta_config.learning_rate * 10},
+    ])
+    criterion = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=roberta_config.epochs)
+
+    train_loader = build_stage2_loader(train_records, tokenizer, roberta_config, shuffle=True)
+    test_loader = build_stage2_loader(test_records, tokenizer, roberta_config, shuffle=False)
+
+    for epoch in range(roberta_config.epochs):
+        model.train()
+        total_loss = 0
+
+        for i, batch in enumerate(train_loader):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["label"].to(device)
+
+            logits = model(input_ids, attention_mask)
+            loss = criterion(logits, labels)
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            total_loss += loss.item()
+
+            if i % 1000 == 0:
+                print(f"  Batch {i}/{len(train_loader)} — Loss: {loss.item():.4f}", flush=True)
+
+        scheduler.step()
+        print(f"Epoch {epoch+1}/{roberta_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
+        evaluate_stage2(model, test_loader, device)
+
+    Path(roberta_config.output_dir).mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), Path(roberta_config.output_dir) / "stage2.pt")
+    print(f"Saved Stage 2 to {roberta_config.output_dir}/stage2.pt")
+    
+def build_stage2_loader(records, tokenizer, config, shuffle):
+    dataset = Stage2Dataset(records, tokenizer, config)
+    return DataLoader(dataset, batch_size=config.train_batch_size, shuffle=shuffle)
+
+def evaluate_stage2(model, loader, device):
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in loader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["label"].to(device)
+
+            logits = model(input_ids, attention_mask)
             preds = logits.argmax(dim=-1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels.cpu().tolist())

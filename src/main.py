@@ -5,8 +5,9 @@ from pathlib import Path
 
 from config import MainConfig, BertConfig, RobertaConfig, GatConfig, TransformerConfig
 from train_stage1 import train_bert, train_roberta
-from train_stage2 import train_transformer
+from train_stage2 import train_roberta_stage2, train_transformer
 from inference import run_bert_inference, run_roberta_inference, load_bert_model, load_roberta_model
+import train_stage2
 
 
 def load_cuda(main_config: MainConfig):
@@ -40,6 +41,9 @@ def main():
     roberta_config = RobertaConfig()
     gat_config = GatConfig()
     trans_config = TransformerConfig()
+    roberta2_config = RobertaConfig()
+    
+    roberta2_config.output_dir = "outputs/roberta-fact-verifier-stage2"
 
     load_cuda(main_config)
     device = main_config.device
@@ -66,7 +70,8 @@ def main():
     test_embeddings = load_embeddings(test_embeddings_path)
     #train_gat(roberta_config, gat_config, device, train_embeddings, test_embeddings)
 
-    train_transformer(roberta_config, trans_config, device, train_embeddings, test_embeddings)
+    train_roberta_stage2(main_config, roberta2_config, device, train_data, test_data, test_embeddings)
+
 
 if __name__ == "__main__":
     main()
