@@ -56,18 +56,15 @@ class GatConfig:
 @dataclass
 class TransformerConfig:
     output_dir: str = "outputs/transformer-fact-verifier"
+    d_model: int = 768
+    nhead: int = 8
+    num_layers: int = 4
+    dim_feedforward: int = 2048
+    dropout: float = 0.1
+    learning_rate: float = 1e-4
+    epochs: int = 20
     train_batch_size: int = 128
     eval_batch_size: int = 128
-    in_channels: int = 768
-    hidden_channels: int = 512
-    out_channels: int = 3
-    num_heads: int = 8
-    num_layers: int = 4
-    dropout: float = 0.1
-    learning_rate: float = 3e-4
-    epochs: int = 20
-    nlp = spacy.load("en_core_web_sm")
-    train_cache_path = "outputs/transformer-fact-verifier/train_graphs.pt"
-    eval_cache_path = "outputs/transformer-fact-verifier/test_graphs.pt"
+    num_classes: int = 3
 
 LABEL_MAP = {"SUPPORTS": 0, "REFUTES": 1, "NOT ENOUGH INFO": 2}

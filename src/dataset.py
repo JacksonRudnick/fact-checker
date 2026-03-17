@@ -170,29 +170,69 @@ class EmbeddingDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.samples[idx]
-    
 
-class Stage2Dataset(Dataset):
-    def __init__(self, records, tokenizer, config):
-        self.records = records
-        self.tokenizer = tokenizer
-        self.config = config
+class TransformerStage2Dataset(Dataset):
+    def __init__(self, embeddings: list[dict], config: RobertaConfig):
+        self.samples = []
+        for result in embeddings:
+            claim_embedding = result["claim_embedding"]
+            candidates = result["candidates"]
+            label = LABEL_MAP[result["label"]]
+
+            if claim_embedding is None:
+                continue
+
+            if candidates:
+                sorted_candidates = sorted(candidates, key=lambda x: x["prob"], reverse=True)
+                top_k = sorted_candidates[:config.top_k]
+                evidence_embeddings = [c["embedding"] for c in top_k]
+            else:
+                evidence_embeddings = []
+
+            self.samples.append({
+                "claim_embedding": claim_embedding.squeeze(0),
+                "evidence_embeddings": evidence_embeddings,
+                "label": label,
+                "num_evidence": len(evidence_embeddings)
+            })
 
     def __len__(self):
-        return len(self.records)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        r = self.records[idx]
-        encoding = self.tokenizer(
-            r["claim"],
-            r["evidence"],
-            max_length=self.config.max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt"
-        )
-        return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "label": torch.tensor(r["label"], dtype=torch.long)
-        }
+        return self.samples[idx]
+    
+def transformer_collate_fn(batch, top_k: int):
+    max_seq = top_k + 1  # claim + top_k evidence
+    d_model = 768
+
+    xs = []
+    masks = []
+    labels = []
+
+    for sample in batch:
+        claim = sample["claim_embedding"]  # [768]
+        evs = sample["evidence_embeddings"]  # list of [768] tensors
+        
+        seq = [claim] + evs
+        seq_len = len(seq)
+        
+        # pad to max_seq
+        while len(seq) < max_seq:
+            seq.append(torch.zeros(d_model))
+        
+        x = torch.stack(seq[:max_seq])  # [max_seq, 768]
+        
+        # padding mask: True = ignore this position
+        mask = torch.zeros(max_seq, dtype=torch.bool)
+        mask[seq_len:] = True
+        
+        xs.append(x)
+        masks.append(mask)
+        labels.append(sample["label"])
+
+    return {
+        "x": torch.stack(xs),           # [batch, max_seq, 768]
+        "mask": torch.stack(masks),      # [batch, max_seq]
+        "label": torch.tensor(labels, dtype=torch.long)
+    }
