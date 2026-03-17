@@ -5,7 +5,7 @@ from pathlib import Path
 
 from config import MainConfig, BertConfig, RobertaConfig, GatConfig, TransformerConfig
 from train_stage1 import train_bert, train_roberta
-from train_stage2 import train_gat, train_transformer
+from train_stage2 import train_transformer
 from inference import run_bert_inference, run_roberta_inference, load_bert_model, load_roberta_model
 
 

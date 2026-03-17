@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from main import TransformerConfig
+from config import TransformerConfig
 
 class TransformerFactVerifier(nn.Module):
     def __init__(self, config: TransformerConfig):

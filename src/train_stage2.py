@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import pickle
 from pathlib import Path
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as PyGDataLoader
