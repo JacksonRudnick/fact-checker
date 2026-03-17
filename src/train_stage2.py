@@ -9,7 +9,8 @@ from transformers import RobertaTokenizer
 
 from config import RobertaConfig, GatConfig, LABEL_MAP, TransformerConfig
 from gat_model import GATFactVerifier
-from dataset import EmbeddingDataset, TransformerStage2Dataset, transformer_collate_fn
+from dataset import EmbeddingDataset, RobertaStage2Dataset, TransformerStage2Dataset, build_stage2_training_data
+from roberta_verifier_model import RobertaVerifier
 from transformer_model import TransformerFactVerifier
 
 
@@ -160,32 +161,37 @@ def evaluate_gat(model: GATFactVerifier, test_loader: PyGDataLoader, device: tor
     print(f"  Recall:    {recall:.4f}")
     print(f"  F1:        {f1:.4f}")
 
-def train_transformer(roberta_config: RobertaConfig, trans_config: TransformerConfig, device: torch.device, train_embeddings: list[dict], test_embeddings: list[dict]):
-    from functools import partial
+def train_roberta_stage2(roberta_config: RobertaConfig, device: torch.device,  train_embeddings: list[dict], test_embeddings: list[dict]):
+    tokenizer = RobertaTokenizer.from_pretrained(roberta_config.model_name)
 
-    train_dataset = TransformerStage2Dataset(train_embeddings, roberta_config)
-    test_dataset = TransformerStage2Dataset(test_embeddings, roberta_config)
+    # train on retrieved sentences
+    train_dataset = RobertaStage2Dataset(train_embeddings, tokenizer, roberta_config)
 
-    collate = partial(transformer_collate_fn, top_k=roberta_config.top_k)
+    # test on retrieved sentences
+    test_dataset = RobertaStage2Dataset(test_embeddings, tokenizer, roberta_config)
 
-    train_loader = DataLoader(train_dataset, batch_size=trans_config.train_batch_size, shuffle=True, collate_fn=collate)
-    test_loader = DataLoader(test_dataset, batch_size=trans_config.eval_batch_size, shuffle=False, collate_fn=collate)
+    train_loader = DataLoader(train_dataset, batch_size=roberta_config.train_batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=roberta_config.eval_batch_size, shuffle=False)
 
-    model = TransformerFactVerifier(trans_config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=trans_config.learning_rate)
+    model = RobertaVerifier(roberta_config).to(device)
+    optimizer = torch.optim.AdamW([
+        {"params": model.roberta.encoder.layer[-4:].parameters(), "lr": roberta_config.learning_rate},
+        {"params": model.roberta.pooler.parameters(), "lr": roberta_config.learning_rate}, # type: ignore
+        {"params": model.classifier.parameters(), "lr": roberta_config.learning_rate * 10},
+    ])
     criterion = nn.CrossEntropyLoss()
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=trans_config.epochs)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=roberta_config.epochs)
 
-    for epoch in range(trans_config.epochs):
+    for epoch in range(roberta_config.epochs):
         model.train()
         total_loss = 0
 
         for i, batch in enumerate(train_loader):
-            x = batch["x"].to(device)
-            mask = batch["mask"].to(device)
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
             labels = batch["label"].to(device)
 
-            logits = model(x, mask)
+            logits = model(input_ids, attention_mask)
             loss = criterion(logits, labels)
 
             loss.backward()
@@ -193,30 +199,30 @@ def train_transformer(roberta_config: RobertaConfig, trans_config: TransformerCo
             optimizer.zero_grad()
             total_loss += loss.item()
 
-            if i % 500 == 0:
+            if i % 1000 == 0:
                 print(f"  Batch {i}/{len(train_loader)} — Loss: {loss.item():.4f}", flush=True)
 
         scheduler.step()
-        print(f"Epoch {epoch+1}/{trans_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
-        evaluate_transformer(model, test_loader, device)
+        print(f"Epoch {epoch+1}/{roberta_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
+        evaluate_stage2(model, test_loader, device)
 
-    Path(trans_config.output_dir).mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), Path(trans_config.output_dir) / "stage2.pt")
-    print(f"Saved transformer to {trans_config.output_dir}/stage2.pt")
+    Path(roberta_config.output_dir).mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), Path(roberta_config.output_dir) / "stage2.pt")
+    print(f"Saved Stage 2 to {roberta_config.output_dir}/stage2.pt")
 
 
-def evaluate_transformer(model: TransformerFactVerifier, loader: DataLoader, device: torch.device):
+def evaluate_stage2(model, loader: DataLoader, device: torch.device):
     model.eval()
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
         for batch in loader:
-            x = batch["x"].to(device)
-            mask = batch["mask"].to(device)
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
             labels = batch["label"].to(device)
 
-            logits = model(x, mask)
+            logits = model(input_ids, attention_mask)
             preds = logits.argmax(dim=-1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels.cpu().tolist())

@@ -5,8 +5,8 @@ from pathlib import Path
 
 from config import MainConfig, BertConfig, RobertaConfig, GatConfig, TransformerConfig
 from train_stage1 import train_bert, train_roberta
-from train_stage2 import train_transformer
 from inference import run_bert_inference, run_roberta_inference, load_bert_model, load_roberta_model
+from train_stage2 import train_roberta_stage2
 
 
 def load_cuda(main_config: MainConfig):
@@ -47,7 +47,7 @@ def main():
     load_cuda(main_config)
     device = main_config.device
 
-    #train_data = load_jsonl(Path(main_config.train_path))
+    train_data = load_jsonl(Path(main_config.train_path))
     #test_data = load_jsonl(Path(main_config.test_path))
 
     #print(f"Train rows: {len(train_data)}", flush=True)
@@ -67,7 +67,7 @@ def main():
     # Stage 2 — Transformer over retrieved embeddings
     train_embeddings = load_embeddings(train_embeddings_path)
     test_embeddings = load_embeddings(test_embeddings_path)
-    train_transformer(roberta_config, trans_config, device, train_embeddings, test_embeddings)
+    train_roberta_stage2(roberta_config, device,  train_embeddings, test_embeddings)
 
 
 if __name__ == "__main__":

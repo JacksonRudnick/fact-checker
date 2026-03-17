@@ -170,7 +170,7 @@ class EmbeddingDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.samples[idx]
-
+    
 class TransformerStage2Dataset(Dataset):
     def __init__(self, embeddings: list[dict], config: RobertaConfig):
         self.samples = []
@@ -201,38 +201,62 @@ class TransformerStage2Dataset(Dataset):
 
     def __getitem__(self, idx):
         return self.samples[idx]
+
+class RobertaStage2Dataset(Dataset):
+    def __init__(self, embeddings: list[dict], tokenizer, config: RobertaConfig):
+        self.samples = []
+        self.tokenizer = tokenizer
+        self.config = config
+
+        for result in embeddings:
+            claim = result["claim"]
+            label = LABEL_MAP[result["label"]]
+            candidates = result["candidates"]
+
+            if candidates:
+                sorted_candidates = sorted(candidates, key=lambda x: x["prob"], reverse=True)
+                top_k = sorted_candidates[:config.top_k]
+                # concatenate all top-k sentences
+                evidence = " ".join(c["sentence"] for c in top_k)
+            else:
+                evidence = "NO_EVIDENCE"
+
+            self.samples.append({
+                "claim": claim,
+                "evidence": evidence,
+                "label": label
+            })
     
-def transformer_collate_fn(batch, top_k: int):
-    max_seq = top_k + 1  # claim + top_k evidence
-    d_model = 768
+def build_stage2_training_data(data: list[dict]) -> list[dict]:
+    records = []
+    for row in data:
+        label = row.get("label")
+        if label not in LABEL_MAP:
+            continue
 
-    xs = []
-    masks = []
-    labels = []
+        claim = str(row.get("claim", "")).strip()
+        if not claim:
+            continue
 
-    for sample in batch:
-        claim = sample["claim_embedding"]  # [768]
-        evs = sample["evidence_embeddings"]  # list of [768] tensors
-        
-        seq = [claim] + evs
-        seq_len = len(seq)
-        
-        # pad to max_seq
-        while len(seq) < max_seq:
-            seq.append(torch.zeros(d_model))
-        
-        x = torch.stack(seq[:max_seq])  # [max_seq, 768]
-        
-        # padding mask: True = ignore this position
-        mask = torch.zeros(max_seq, dtype=torch.bool)
-        mask[seq_len:] = True
-        
-        xs.append(x)
-        masks.append(mask)
-        labels.append(sample["label"])
+        evidence_text = "NO_EVIDENCE"
+        if label != "NOT ENOUGH INFO":
+            for ev in row.get("evidence", []):
+                if not isinstance(ev, dict):
+                    continue
+                doc_id = ev.get("doc_id")
+                sent_id = ev.get("sentence_id")
+                if doc_id is None or sent_id is None:
+                    continue
+                doc_sentences = row.get("articles", {}).get(doc_id, [])
+                if 0 <= sent_id < len(doc_sentences):
+                    evidence_text = str(doc_sentences[sent_id]).strip()
+                    if evidence_text:
+                        break
 
-    return {
-        "x": torch.stack(xs),           # [batch, max_seq, 768]
-        "mask": torch.stack(masks),      # [batch, max_seq]
-        "label": torch.tensor(labels, dtype=torch.long)
-    }
+        records.append({
+            "claim": claim,
+            "evidence": evidence_text,
+            "label": LABEL_MAP[label]
+        })
+
+    return records

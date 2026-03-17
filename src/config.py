@@ -32,7 +32,7 @@ class RobertaConfig:
     train_batch_size: int = 128
     eval_batch_size: int = 128
     learning_rate: float = 2e-5
-    top_k: int = 10
+    top_k: int = 5
     threshold: float = 0.3
     dropout: float = 0.1
 
@@ -62,7 +62,7 @@ class TransformerConfig:
     dim_feedforward: int = 3072
     dropout: float = 0.2
     learning_rate: float = 1e-4
-    epochs: int = 20
+    epochs: int = 30
     train_batch_size: int = 128
     eval_batch_size: int = 128
     num_classes: int = 3
