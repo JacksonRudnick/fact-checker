@@ -3,9 +3,9 @@ import pickle
 import torch
 from pathlib import Path
 
-from config import MainConfig, BertConfig, RobertaConfig, GatConfig
+from config import MainConfig, BertConfig, RobertaConfig, GatConfig, TransformerConfig
 from train_stage1 import train_bert, train_roberta
-from train_stage2 import train_gat
+from train_stage2 import train_gat, train_transformer
 from inference import run_bert_inference, run_roberta_inference, load_bert_model, load_roberta_model
 
 
@@ -39,6 +39,7 @@ def main():
     bert_config = BertConfig()
     roberta_config = RobertaConfig()
     gat_config = GatConfig()
+    trans_config = TransformerConfig()
 
     load_cuda(main_config)
     device = main_config.device
@@ -63,8 +64,9 @@ def main():
     # Gat
     train_embeddings = load_embeddings(train_embeddings_path)
     test_embeddings = load_embeddings(test_embeddings_path)
-    train_gat(roberta_config, gat_config, device, train_embeddings, test_embeddings)
+    #train_gat(roberta_config, gat_config, device, train_embeddings, test_embeddings)
 
+    train_transformer(roberta_config, trans_config, device, train_embeddings, test_embeddings)
 
 if __name__ == "__main__":
     main()

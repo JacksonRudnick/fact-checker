@@ -8,6 +8,10 @@ import os
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import sklearn.metrics
+
+# Restrict visible ROCm devices before transformers imports PyTorch.
+DEFAULT_CUDA_VISIBLE_DEVICES = os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 
 import numpy as np
 from datasets import Dataset
@@ -45,7 +49,7 @@ class VerifierConfig:
     train_batch_size: int = 8
     eval_batch_size: int = 8
     learning_rate: float = 2e-5
-    cuda_visible_devices: str = "0"
+    cuda_visible_devices: str = DEFAULT_CUDA_VISIBLE_DEVICES
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -113,7 +117,10 @@ def compute_metrics(eval_pred):
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
     accuracy = float((predictions == labels).mean())
-    return {"accuracy": accuracy}
+    precision = sklearn.metrics.precision_score(labels, predictions, average="weighted", zero_division=0)
+    recall = sklearn.metrics.recall_score(labels, predictions, average="weighted", zero_division=0)
+    f1 = sklearn.metrics.f1_score(labels, predictions, average="weighted", zero_division=0)
+    return {"accuracy": accuracy, "precision": precision, "recall": recall, "f1": f1}
 
 
 def train_bert_verifier(cfg: VerifierConfig) -> None:
@@ -192,7 +199,6 @@ def main() -> None:
     cfg = VerifierConfig()
 
     if cfg.cuda_visible_devices:
-        os.environ["CUDA_VISIBLE_DEVICES"] = cfg.cuda_visible_devices
         print(f"Using CUDA_VISIBLE_DEVICES={cfg.cuda_visible_devices}")
 
     print("\n=== Training BERT verifier ===")

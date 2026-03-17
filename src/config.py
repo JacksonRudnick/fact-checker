@@ -32,7 +32,7 @@ class RobertaConfig:
     train_batch_size: int = 128
     eval_batch_size: int = 128
     learning_rate: float = 2e-5
-    top_k: int = 10
+    top_k: int = 20
     threshold: float = 0.3
     dropout: float = 0.1
 
@@ -42,15 +42,32 @@ class GatConfig:
     train_batch_size: int = 64
     eval_batch_size: int = 64
     in_channels: int = 768
-    hidden_channels: int = 768
+    hidden_channels: int = 512
     out_channels: int = 3
     num_heads: int = 8
     num_layers: int = 6
-    dropout: float = 0.2
-    learning_rate: float = 1e-4
-    epochs: int = 20
+    dropout: float = 0.3
+    learning_rate: float = 3e-4
+    epochs: int = 30
     nlp = spacy.load("en_core_web_sm")
     train_cache_path = "outputs/gat-fact-verifier/train_graphs.pt"
     eval_cache_path = "outputs/gat-fact-verifier/test_graphs.pt"
+
+@dataclass
+class TransformerConfig:
+    output_dir: str = "outputs/transformer-fact-verifier"
+    train_batch_size: int = 128
+    eval_batch_size: int = 128
+    in_channels: int = 768
+    hidden_channels: int = 512
+    out_channels: int = 3
+    num_heads: int = 8
+    num_layers: int = 4
+    dropout: float = 0.1
+    learning_rate: float = 3e-4
+    epochs: int = 20
+    nlp = spacy.load("en_core_web_sm")
+    train_cache_path = "outputs/transformer-fact-verifier/train_graphs.pt"
+    eval_cache_path = "outputs/transformer-fact-verifier/test_graphs.pt"
 
 LABEL_MAP = {"SUPPORTS": 0, "REFUTES": 1, "NOT ENOUGH INFO": 2}

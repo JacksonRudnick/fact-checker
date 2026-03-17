@@ -1,6 +1,8 @@
 import torch
+from torch.distributions import Transform
 from torch.utils.data import Dataset
 from transformers import BertTokenizer, RobertaTokenizer
+from config import RobertaConfig, LABEL_MAP
 
 
 class FeverStage1BertDataset(Dataset):
@@ -133,3 +135,38 @@ def roberta_collate_fn(batch):
         "doc_id": [b["doc_id"] for b in batch],
         "sent_id": [b["sent_id"] for b in batch],
     }
+
+
+class EmbeddingDataset(Dataset):
+    def __init__(self, embeddings: list[dict], config: RobertaConfig):
+        self.samples = []
+        max_nodes = config.top_k + 1  # claim + top_k sentences
+
+        for result in embeddings:
+            label = LABEL_MAP[result["label"]]
+            claim_embedding = result["claim_embedding"]
+            candidates = result["candidates"]
+
+            if claim_embedding is None:
+                continue
+
+            if candidates:
+                sorted_candidates = sorted(candidates, key=lambda x: x["prob"], reverse=True)
+                top_k = sorted_candidates[:config.top_k]
+                top_k_embeddings = torch.stack([c["embedding"] for c in top_k])
+                x = torch.cat([claim_embedding, top_k_embeddings], dim=0)
+            else:
+                x = claim_embedding
+
+            # pad to max_nodes
+            if x.size(0) < max_nodes:
+                padding = torch.zeros(max_nodes - x.size(0), x.size(1))
+                x = torch.cat([x, padding], dim=0)
+
+            self.samples.append({"x": x, "label": label})
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]

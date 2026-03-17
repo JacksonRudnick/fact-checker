@@ -4,10 +4,13 @@ import pickle
 from pathlib import Path
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader as PyGDataLoader
+from torch.utils.data import DataLoader
 from sklearn.metrics import precision_score, recall_score, f1_score
 
-from config import RobertaConfig, GatConfig, LABEL_MAP
+from config import RobertaConfig, GatConfig, LABEL_MAP, TransformerConfig
 from gat_model import GATFactVerifier
+from dataset import EmbeddingDataset
+from transformer_model import TransformerFactVerifier
 
 
 def result_to_graph(result: dict, config: RobertaConfig, gat_config: GatConfig) -> Data | None:
@@ -34,15 +37,23 @@ def result_to_graph(result: dict, config: RobertaConfig, gat_config: GatConfig) 
 
     if top_k_sentences:
         claim_doc = gat_config.nlp(claim)
-        for sent_idx, sentence in enumerate(top_k_sentences):
-            sent_doc = gat_config.nlp(sentence)
-            sent_node_idx = sent_idx + 1  # claim is node 0
-            for claim_token in claim_doc:
-                for sent_token in sent_doc:
-                    if claim_token.text.lower() == sent_token.text.lower():
-                        if not claim_token.is_stop:
-                            edge_src.append(0)
-                            edge_dst.append(sent_node_idx)
+        for sent_idx_a, sentence_a in enumerate(top_k_sentences):
+            for sent_idx_b, sentence_b in enumerate(top_k_sentences):
+                if sent_idx_a >= sent_idx_b:
+                    continue
+                doc_a = gat_config.nlp(sentence_a)
+                doc_b = gat_config.nlp(sentence_b)
+                node_a = sent_idx_a + 1
+                node_b = sent_idx_b + 1
+                for token_a in doc_a:
+                    for token_b in doc_b:
+                        if token_a.text.lower() == token_b.text.lower():
+                            if not token_a.is_stop:
+                                edge_src.append(node_a)
+                                edge_dst.append(node_b)
+                                edge_src.append(node_b)
+                                edge_dst.append(node_a)
+                                break
 
     total_nodes = x.size(0)
     if edge_src:
@@ -137,6 +148,76 @@ def evaluate_gat(model: GATFactVerifier, test_loader: PyGDataLoader, device: tor
             labels = batch.y.squeeze(-1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels)
+
+    accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
+    precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
+    recall = recall_score(all_labels, all_preds, average='macro', zero_division=0)
+    f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+
+    print(f"  Accuracy:  {accuracy:.4f}")
+    print(f"  Precision: {precision:.4f}")
+    print(f"  Recall:    {recall:.4f}")
+    print(f"  F1:        {f1:.4f}")
+
+
+def train_transformer(roberta_config: RobertaConfig, trans_config: TransformerConfig, device: torch.device, train_embeddings: list[dict], test_embeddings: list[dict]):
+    train_dataset = EmbeddingDataset(train_embeddings, roberta_config)
+    test_dataset = EmbeddingDataset(test_embeddings, roberta_config)
+
+    print(f"Train samples: {len(train_dataset)}", flush=True)
+    print(f"Test samples: {len(test_dataset)}", flush=True)
+
+    train_loader = DataLoader(train_dataset, batch_size=trans_config.train_batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=trans_config.eval_batch_size, shuffle=False)
+
+    model = TransformerFactVerifier(trans_config).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=trans_config.learning_rate)
+    criterion = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=trans_config.epochs)
+
+    for epoch in range(trans_config.epochs):
+        model.train()
+        total_loss = 0
+
+        for i, batch in enumerate(train_loader):
+            x = batch["x"].to(device)          # [batch, seq_len, 768]
+            labels = batch["label"].to(device)  # [batch]
+
+            logits = model(x)
+            loss = criterion(logits, labels)
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            total_loss += loss.item()
+
+            if i % 1000 == 0:
+                print(f"  Batch {i}/{len(train_loader)} — Loss: {loss.item():.4f}", flush=True)
+
+        scheduler.step()
+        print(f"Epoch {epoch+1}/{trans_config.epochs}, Loss: {total_loss/len(train_loader):.4f}")
+        evaluate_transformer(model, test_loader, device)
+
+    Path(trans_config.output_dir).mkdir(parents=True, exist_ok=True)
+    output_path = Path(trans_config.output_dir) / "transformer_verifier.pt"
+    torch.save(model.state_dict(), output_path)
+    print(f"Saved transformer verifier to: {output_path}")
+
+
+def evaluate_transformer(model: TransformerFactVerifier, loader: DataLoader, device: torch.device):
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for batch in loader:
+            x = batch["x"].to(device)
+            labels = batch["label"].to(device)
+
+            logits = model(x)
+            preds = logits.argmax(dim=-1).cpu().tolist()
+            all_preds.extend(preds)
+            all_labels.extend(labels.cpu().tolist())
 
     accuracy = sum(p == l for p, l in zip(all_preds, all_labels)) / len(all_labels)
     precision = precision_score(all_labels, all_preds, average='macro', zero_division=0)
