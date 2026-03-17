@@ -58,11 +58,11 @@ class TransformerConfig:
     output_dir: str = "outputs/transformer-fact-verifier"
     d_model: int = 768
     nhead: int = 8
-    num_layers: int = 4
-    dim_feedforward: int = 2048
+    num_layers: int = 6
+    dim_feedforward: int = 3072
     dropout: float = 0.1
     learning_rate: float = 1e-4
-    epochs: int = 20
+    epochs: int = 30
     train_batch_size: int = 128
     eval_batch_size: int = 128
     num_classes: int = 3
