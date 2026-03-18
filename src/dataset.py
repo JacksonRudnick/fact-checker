@@ -182,6 +182,10 @@ class RobertaStage2Dataset(Dataset):
                 sorted_candidates = sorted(candidates, key=lambda x: x["prob"], reverse=True)
                 top_k = sorted_candidates[:config.top_k]
                 # concatenate all top-k sentences
+                #evidence = " ".join(c["sentence"] for c in top_k)
+                
+                # reverse order so most relevant is closest to claim
+                top_k = sorted_candidates[:config.top_k][::-1]
                 evidence = " ".join(c["sentence"] for c in top_k)
             else:
                 evidence = "NO_EVIDENCE"

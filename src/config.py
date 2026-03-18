@@ -28,7 +28,7 @@ class RobertaConfig:
     tokenizer_name: str = "roberta-base"
     output_dir: str = "outputs/roberta-fact-verifier"
     max_length: int = 512
-    epochs: int = 6
+    epochs: int = 3
     train_batch_size: int = 128
     eval_batch_size: int = 128
     learning_rate: float = 2e-5
