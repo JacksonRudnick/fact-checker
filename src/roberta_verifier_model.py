@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 from transformers import RobertaModel
 from config import RobertaConfig
@@ -12,7 +11,9 @@ class RobertaVerifier(nn.Module):
 
         for param in self.roberta.parameters():
             param.requires_grad = False
-        for param in self.roberta.encoder.layer[-2:].parameters():
+        
+        # unfreeze last x layers
+        for param in self.roberta.encoder.layer[-config.stage2_unfreeze_layers:].parameters():
             param.requires_grad = True
         for param in self.roberta.pooler.parameters(): # type: ignore
             param.requires_grad = True

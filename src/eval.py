@@ -4,29 +4,13 @@ import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
 from sklearn.metrics import precision_score, recall_score, f1_score
-from torch import nn
 from transformers import RobertaTokenizer
 
 from config import MainConfig, RobertaConfig
-from roberta_model import RobertaRelevanceScorer
+from roberta_relevance_model import RobertaRelevanceScorer
 from roberta_verifier_model import RobertaVerifier
 from dataset import RobertaStage2Dataset
-
-
-def load_jsonl(path):
-    rows = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
-def load_embeddings(path):
-    with open(path, "rb") as f:
-        return pickle.load(f)
-    
+from util import load_jsonl, load_embeddings, load_cuda
 
 def load_roberta_model(config: RobertaConfig, device: torch.device):
     tokenizer = RobertaTokenizer.from_pretrained(config.tokenizer_name)
@@ -34,7 +18,6 @@ def load_roberta_model(config: RobertaConfig, device: torch.device):
     model.load_state_dict(torch.load(Path(config.output_dir) / "stage1.pt", map_location=device))
     model.eval()
     return model, tokenizer
-
 
 def evaluate_stage1(embeddings, test_data, config):
     gold_map = {}
@@ -116,32 +99,27 @@ def main():
     main_config = MainConfig()
     roberta_config = RobertaConfig()
 
-    if torch.cuda.is_available():
-        main_config.device = torch.device("cuda")
-        print(f"Using CUDA: {torch.cuda.get_device_name(0)}")
-    else:
-        main_config.device = torch.device("cpu")
-    device = main_config.device
+    load_cuda(main_config)
 
-    test_data = load_jsonl(main_config.test_path)
+    test_data = load_jsonl(Path(main_config.test_path))
     test_embeddings_path = Path(roberta_config.output_dir) / "stage1_test_embeddings.pkl"
     test_embeddings = load_embeddings(test_embeddings_path)
 
-    print("=== Stage 1 Evaluation ===")
+    print("Stage 1 Eval")
     evaluate_stage1(test_embeddings, test_data, roberta_config)
 
-    print("\n=== Stage 2 Evaluation ===")
+    print("\nStage 2 Eval")
     tokenizer = RobertaTokenizer.from_pretrained(roberta_config.tokenizer_name)
     test_dataset = RobertaStage2Dataset(test_embeddings, tokenizer, roberta_config)
     test_loader = DataLoader(test_dataset, batch_size=roberta_config.eval_batch_size, shuffle=False)
 
-    model = RobertaVerifier(roberta_config).to(device)
+    model = RobertaVerifier(roberta_config).to(main_config.device)
     model.load_state_dict(torch.load(
         Path(roberta_config.output_dir) / "stage2.pt",
-        map_location=device
+        map_location=main_config.device
     ))
 
-    evaluate_stage2(model, test_loader, device)
+    evaluate_stage2(model, test_loader, main_config.device)
 
 
 if __name__ == "__main__":
