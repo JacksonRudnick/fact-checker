@@ -20,8 +20,8 @@ class RobertaConfig:
     threshold: float = 0.3
     dropout: float = 0.1
 
-    stage1_epochs: int = 5
-    stage1_unfreeze_layers: int = 4
+    stage1_epochs: int = 3
+    stage1_unfreeze_layers: int = 3
 
     stage2_epochs: int = 3
     stage2_unfreeze_layers: int = 2
